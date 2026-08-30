@@ -165,7 +165,7 @@ def _base_opts() -> dict:
 
 
 def _tier1_opts() -> dict:
-    """Tier 1: Pure Android native client (100% bypasses browser consent pages & SABR blocks)."""
+    """Tier 1: Auto EJS multi-stream negotiation with Deno JS challenge solver."""
     return {
         "format": "ba/b/bestaudio/best",
         "noplaylist": True,
@@ -175,47 +175,36 @@ def _tier1_opts() -> dict:
         "logger": _YTDLLogger(),
         "source_address": "0.0.0.0",
         "extractor_retries": 3,
-        "extractor_args": {
-            "youtube": {
-                "player_client": ["android"]
-            }
-        }
     }
 
 
 def _tier2_opts() -> dict:
-    """Tier 2: Android client with cookies for age-restricted content."""
+    """Tier 2: Android native client."""
     opts = _tier1_opts()
-    if cookie_file_path and os.path.exists(cookie_file_path):
-        opts["cookiefile"] = cookie_file_path
+    opts["extractor_args"] = {
+        "youtube": {
+            "player_client": ["android"]
+        }
+    }
     return opts
 
 
 def _tier3_opts() -> dict:
-    """Tier 3: Multi-client fallback (Android + TV + iOS)."""
-    opts = {
-        "format": "ba/b/bestaudio/best",
-        "noplaylist": True,
-        "nocheckcertificate": True,
-        "quiet": True,
-        "no_warnings": True,
-        "logger": _YTDLLogger(),
-        "source_address": "0.0.0.0",
-        "extractor_args": {
-            "youtube": {
-                "player_client": ["android", "tv", "ios"]
-            }
+    """Tier 3: iOS and TV client fallback."""
+    opts = _tier1_opts()
+    opts["extractor_args"] = {
+        "youtube": {
+            "player_client": ["ios", "tv"]
         }
     }
-    if cookie_file_path and os.path.exists(cookie_file_path):
-        opts["cookiefile"] = cookie_file_path
     return opts
 
 
 def _tier4_opts() -> dict:
-    """Tier 4: Permissive fallback."""
-    opts = _base_opts()
-    opts["format"] = "best"
+    """Tier 4: Cookie authenticated fallback."""
+    opts = _tier1_opts()
+    if cookie_file_path and os.path.exists(cookie_file_path):
+        opts["cookiefile"] = cookie_file_path
     return opts
 
 
@@ -456,10 +445,10 @@ async def extract_audio_info(query_or_url: str, requester: str = "Web User"):
     def _extract():
         # Try each tier in order until one succeeds
         tiers = [
-            ("Tier1-AndroidNative", _tier1_opts()),
-            ("Tier2-AndroidAuth", _tier2_opts()),
-            ("Tier3-MultiClient", _tier3_opts()),
-            ("Tier4-Permissive", _tier4_opts()),
+            ("Tier1-AutoEJS", _tier1_opts()),
+            ("Tier2-Android", _tier2_opts()),
+            ("Tier3-iOS-TV", _tier3_opts()),
+            ("Tier4-Auth", _tier4_opts()),
         ]
 
         for tier_name, opts in tiers:
