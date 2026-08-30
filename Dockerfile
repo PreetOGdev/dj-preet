@@ -1,7 +1,11 @@
 FROM python:3.11-slim
 
-# Install system FFmpeg audio tools and Node.js for YouTube JS signature deciphering
-RUN apt-get update && apt-get install -y ffmpeg nodejs && rm -rf /var/lib/apt/lists/*
+# Install FFmpeg for audio processing and curl for Deno install
+RUN apt-get update && apt-get install -y ffmpeg curl unzip && rm -rf /var/lib/apt/lists/*
+
+# Install Deno — yt-dlp's preferred JS runtime for YouTube signature deciphering
+RUN curl -fsSL https://deno.land/install.sh | DENO_INSTALL=/usr/local sh
+ENV DENO_DIR=/tmp/deno
 
 WORKDIR /app
 COPY requirements.txt .

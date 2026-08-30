@@ -1,12 +1,22 @@
+"""
+audio_source.py — Render-Hardened YouTube Audio Extraction Engine
+=================================================================
+Built specifically for Render datacenter environments where YouTube
+aggressively blocks requests. Every extraction attempt is logged so
+failures are always visible in Render logs.
+"""
+
 import os
 import asyncio
 import collections
 import io
 import json
+import logging
 import random
 import re
 import threading
 import time
+import traceback
 import urllib.parse
 import urllib.request
 from typing import Optional, List, Dict, Any, Set
@@ -15,11 +25,17 @@ import imageio_ffmpeg
 import yt_dlp
 import shutil
 
+logger = logging.getLogger("DJ-Preet.Audio")
+
+# ─── FFmpeg Setup ──────────────────────────────────────────────────
 system_ffmpeg = shutil.which("ffmpeg")
 FFMPEG_EXECUTABLE = system_ffmpeg or imageio_ffmpeg.get_ffmpeg_exe()
 
-# Optimized FFmpeg parameters: ultra-fast 32k probesize for instantaneous startup (< 50ms), auto-reconnect on network jitter
-FFMPEG_BEFORE_OPTIONS = "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 -probesize 32k -analyzeduration 0 -fflags nobuffer+fastseek+discardcorrupt -nostdin"
+FFMPEG_BEFORE_OPTIONS = (
+    "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 "
+    "-probesize 32k -analyzeduration 0 "
+    "-fflags nobuffer+fastseek+discardcorrupt -nostdin"
+)
 FFMPEG_OPTIONS = "-vn"
 
 # Audio filter presets for Equalizer
@@ -35,42 +51,42 @@ AUDIO_FILTERS = {
     "karaoke": "-vn -af pan=stereo|c0=c0-c1|c1=c1-c0",
 }
 
-# Cookie file auto-detection (Render Secret Files and Environment Variables)
+# ─── Cookie File Auto-Detection ───────────────────────────────────
 cookie_file_path = None
 
-# Cookie file auto-detection (Render Secret Files and Environment Variables)
-cookie_file_path = None
-
-# 1. Scan Render Secret Files directory (/etc/secrets) for any uploaded cookie file
+# 1. Render Secret Files directory (/etc/secrets)
 if os.path.exists("/etc/secrets"):
     for fname in os.listdir("/etc/secrets"):
         fpath = os.path.join("/etc/secrets", fname)
         if os.path.isfile(fpath):
             cookie_file_path = fpath
-            print(f"[AudioSource] Loaded Render Secret File: {fpath}")
+            logger.info(f"[Cookies] Loaded Render Secret File: {fpath}")
             break
 
-# 2. Check local workspace directory for cookies.txt
+# 2. Local workspace directory
 if not cookie_file_path:
     for local_name in ["youtube_cookies.txt", "cookies.txt", "cookie.txt"]:
         local_path = os.path.join(os.path.dirname(__file__), local_name)
         if os.path.exists(local_path):
             cookie_file_path = local_path
+            logger.info(f"[Cookies] Loaded local cookie file: {local_path}")
             break
 
-# 3. Check for YOUTUBE_COOKIES environment variable and auto-repair Netscape format
+# 3. YOUTUBE_COOKIES environment variable
 raw_cookies = os.getenv("YOUTUBE_COOKIES", "").strip()
 if not cookie_file_path and raw_cookies:
     try:
         temp_dir = "/tmp" if os.path.exists("/tmp") else os.path.dirname(__file__)
         cookie_file_path = os.path.join(temp_dir, "youtube_cookies.txt")
-        
-        # Ensure Netscape header
+
         formatted_cookies = raw_cookies
         if not formatted_cookies.startswith("# Netscape HTTP Cookie File"):
-            formatted_cookies = "# Netscape HTTP Cookie File\n# http://curl.haxx.se/rfc/cookie_spec.html\n" + formatted_cookies
-        
-        # Ensure proper tab separation for lines
+            formatted_cookies = (
+                "# Netscape HTTP Cookie File\n"
+                "# http://curl.haxx.se/rfc/cookie_spec.html\n"
+                + formatted_cookies
+            )
+
         lines = []
         for line in formatted_cookies.splitlines():
             line_str = line.strip()
@@ -82,68 +98,108 @@ if not cookie_file_path and raw_cookies:
                     lines.append("\t".join(parts[:7]))
                 else:
                     lines.append(line)
-        
+
         with open(cookie_file_path, "w", encoding="utf-8") as f:
             f.write("\n".join(lines) + "\n")
+        logger.info(f"[Cookies] Created cookie file from env var: {cookie_file_path}")
     except Exception as e:
-        print(f"[AudioSource] Cookie formatting note: {e}")
+        logger.warning(f"[Cookies] Could not create cookie file from env var: {e}")
+        cookie_file_path = None
 
-class SilentYTDLLogger:
-    def debug(self, msg):
-        pass
-    def warning(self, msg):
-        pass
+if not cookie_file_path:
+    logger.info("[Cookies] No cookie file found — running without cookies")
+
+
+# ─── yt-dlp Logger (suppresses noise, logs real errors) ───────────
+class _YTDLLogger:
+    """Custom logger that suppresses known-harmless warnings but logs real errors."""
+    def debug(self, msg): pass
+    def warning(self, msg): pass
     def error(self, msg):
-        # Suppress redundant YouTube captcha / sign-in warnings since fail-safe handles playback
-        if "Sign in to confirm" in msg or "Requested format is not available" in msg or "cookies" in msg:
+        # Suppress known sign-in warnings that the fallback chain handles
+        if any(s in msg for s in ["Sign in to confirm", "cookies", "HTTP Error 403", "429"]):
+            logger.debug(f"[yt-dlp/suppressed] {msg}")
             return
-        if not ("HTTP Error 403" in msg or "429" in msg):
-            print(f"[AudioSource/YTDL] {msg}")
+        logger.error(f"[yt-dlp] {msg}")
 
 
-YTDL_OPTIONS = {
-    "format": "ba/b/bestaudio/best",
-    "outtmpl": "%(extractor)s-%(id)s-%(title)s.%(ext)s",
-    "restrictfilenames": True,
-    "noplaylist": True,
-    "nocheckcertificate": True,
-    "ignoreerrors": False,
-    "logtostderr": False,
-    "quiet": True,
-    "no_warnings": True,
-    "logger": SilentYTDLLogger(),
-    "default_search": "ytsearch",
-    "source_address": "0.0.0.0",
-    "extractor_args": {
-        "youtube": {
-            "player_client": ["android", "web_embedded", "mweb", "ios", "tv"]
-        }
-    },
-    "http_headers": {
-        "User-Agent": "Mozilla/5.0 (Linux; Android 13; SM-G981B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/116.0.0.0 Mobile Safari/537.36",
-        "Accept-Language": "en-US,en;q=0.9",
+# ─── yt-dlp Option Profiles ──────────────────────────────────────
+
+def _base_opts() -> dict:
+    """Base options shared across all extraction profiles."""
+    opts = {
+        "format": "bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio/best",
+        "noplaylist": True,
+        "nocheckcertificate": True,
+        "quiet": True,
+        "no_warnings": True,
+        "logger": _YTDLLogger(),
+        "source_address": "0.0.0.0",
     }
-}
+    if cookie_file_path and os.path.exists(cookie_file_path):
+        opts["cookiefile"] = cookie_file_path
+    return opts
 
-if cookie_file_path and os.path.exists(cookie_file_path):
-    YTDL_OPTIONS["cookiefile"] = cookie_file_path
 
-SEARCH_OPTIONS = {
-    "format": "ba/b/bestaudio/best",
-    "extract_flat": "in_playlist",
-    "skip_download": True,
-    "quiet": True,
-    "no_warnings": True,
-    "logger": SilentYTDLLogger(),
-    "default_search": "ytsearch",
-}
+def _primary_opts() -> dict:
+    """Primary extraction: uses cookies + default client."""
+    opts = _base_opts()
+    opts["default_search"] = "ytsearch"
+    return opts
 
-if cookie_file_path and os.path.exists(cookie_file_path):
-    SEARCH_OPTIONS["cookiefile"] = cookie_file_path
 
-ytdl = yt_dlp.YoutubeDL(YTDL_OPTIONS)
-search_ytdl = yt_dlp.YoutubeDL(SEARCH_OPTIONS)
+def _android_opts() -> dict:
+    """Android client bypass — works on datacenter IPs without cookies."""
+    opts = _base_opts()
+    opts.pop("cookiefile", None)  # No cookies for anonymous extraction
+    opts["extractor_args"] = {
+        "youtube": {"player_client": ["android"]}
+    }
+    opts["http_headers"] = {
+        "User-Agent": (
+            "com.google.android.youtube/19.29.37 "
+            "(Linux; U; Android 14) gzip"
+        ),
+    }
+    return opts
 
+
+def _web_opts() -> dict:
+    """Web client fallback with cookies."""
+    opts = _base_opts()
+    opts["extractor_args"] = {
+        "youtube": {"player_client": ["web"]}
+    }
+    opts["http_headers"] = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/126.0.0.0 Safari/537.36"
+        ),
+    }
+    return opts
+
+
+def _search_opts() -> dict:
+    """Lightweight search-only options (extract_flat, no streaming)."""
+    opts = {
+        "extract_flat": "in_playlist",
+        "skip_download": True,
+        "quiet": True,
+        "no_warnings": True,
+        "logger": _YTDLLogger(),
+        "default_search": "ytsearch",
+    }
+    if cookie_file_path and os.path.exists(cookie_file_path):
+        opts["cookiefile"] = cookie_file_path
+    return opts
+
+
+# Create persistent instances for search (lightweight, no streaming)
+_search_ytdl = yt_dlp.YoutubeDL(_search_opts())
+
+
+# ─── Helpers ──────────────────────────────────────────────────────
 
 def format_duration(seconds):
     if not seconds or seconds <= 0:
@@ -157,29 +213,45 @@ def format_duration(seconds):
 
 
 def _get_stream_url(entry: dict) -> str:
+    """Extract the actual playable stream URL from yt-dlp info dict.
+    
+    yt-dlp places the URL in different locations depending on the
+    client and format selection:
+      - entry["url"]              — most common (single format)
+      - entry["requested_formats"][0]["url"] — when format merging is needed
+      - entry["formats"][-1]["url"]          — last resort from format list
+    """
     if not entry:
         return ""
     if entry.get("url"):
-        return entry.get("url")
+        return entry["url"]
     if entry.get("requested_formats"):
-        for f in entry["requested_formats"]:
-            if f.get("url"):
-                return f["url"]
+        for fmt in entry["requested_formats"]:
+            if fmt.get("url"):
+                return fmt["url"]
     if entry.get("formats"):
-        for f in reversed(entry["formats"]):
-            if f.get("url"):
-                return f["url"]
+        # Prefer audio-only formats
+        for fmt in reversed(entry["formats"]):
+            if fmt.get("url") and fmt.get("acodec", "none") != "none":
+                return fmt["url"]
+        # Fall back to any format with a URL
+        for fmt in reversed(entry["formats"]):
+            if fmt.get("url"):
+                return fmt["url"]
     return ""
 
 
 def _format_track_entry(entry: dict, fallback_query: str, requester: str = "Web User") -> dict:
+    """Normalize yt-dlp info dict into our standard track format."""
     video_id = entry.get("id", "")
     title = entry.get("title", "Unknown Title")
     channel = entry.get("uploader") or entry.get("channel") or "Unknown Artist"
     duration = entry.get("duration") or 0
-    webpage_url = entry.get("webpage_url") or (f"https://www.youtube.com/watch?v={video_id}" if video_id else "")
+    webpage_url = entry.get("webpage_url") or (
+        f"https://www.youtube.com/watch?v={video_id}" if video_id else ""
+    )
     stream_url = _get_stream_url(entry)
-    
+
     thumbnails = entry.get("thumbnails", [])
     thumbnail = ""
     if thumbnails:
@@ -200,17 +272,32 @@ def _format_track_entry(entry: dict, fallback_query: str, requester: str = "Web 
     }
 
 
+def _clean_youtube_url(url: str) -> str:
+    """Strip playlist/tracking parameters from YouTube URL to get clean video URL."""
+    if "youtube.com" in url or "youtu.be" in url:
+        vid_id = None
+        if "v=" in url:
+            vid_id = url.split("v=")[1].split("&")[0]
+        elif "youtu.be/" in url:
+            vid_id = url.split("youtu.be/")[1].split("?")[0]
+        if vid_id:
+            return f"https://www.youtube.com/watch?v={vid_id}"
+    return url
+
+
+# ─── Search ──────────────────────────────────────────────────────
+
 async def search_youtube(query: str, limit: int = 8):
-    """Searches YouTube for tracks matching query and returns metadata list."""
+    """Search YouTube and return metadata list (no audio streams)."""
     loop = asyncio.get_running_loop()
 
     def _search():
         try:
             if query.startswith("http://") or query.startswith("https://"):
-                info = search_ytdl.extract_info(query, download=False)
+                info = _search_ytdl.extract_info(query, download=False)
                 entries = info.get("entries", [info]) if info else []
             else:
-                info = search_ytdl.extract_info(f"ytsearch{limit}:{query}", download=False)
+                info = _search_ytdl.extract_info(f"ytsearch{limit}:{query}", download=False)
                 entries = info.get("entries", []) if info else []
 
             results = []
@@ -218,8 +305,11 @@ async def search_youtube(query: str, limit: int = 8):
                 if not entry:
                     continue
                 video_id = entry.get("id")
-                url = f"https://www.youtube.com/watch?v={video_id}" if video_id else (entry.get("url") or "")
-                
+                url = (
+                    f"https://www.youtube.com/watch?v={video_id}"
+                    if video_id
+                    else (entry.get("url") or "")
+                )
                 thumbnails = entry.get("thumbnails", [])
                 thumbnail = ""
                 if thumbnails:
@@ -239,116 +329,122 @@ async def search_youtube(query: str, limit: int = 8):
                 })
             return results
         except Exception as e:
-            print(f"[AudioSource] Search error for '{query}': {e}")
+            logger.error(f"[Search] Error for '{query}': {e}")
             return []
 
     return await loop.run_in_executor(None, _search)
 
 
-async def extract_audio_info(query_or_url: str, requester: str = "Web User"):
-    """Extracts direct audio stream URL and detailed track metadata with multi-tier fallback."""
-    query_or_url = query_or_url.strip()
+# ─── Audio Extraction (Multi-Tier Fallback) ──────────────────────
 
-    # If query is text, resolve top official YouTube video first
+async def extract_audio_info(query_or_url: str, requester: str = "Web User"):
+    """
+    Extract a playable audio stream URL from YouTube.
+    
+    Uses a 3-tier fallback chain designed for Render datacenter IPs:
+      1. Primary (cookies + default client)
+      2. Android client (anonymous, no cookies)
+      3. Web client (with cookies)
+    
+    Every attempt is logged so failures are ALWAYS visible in Render logs.
+    """
+    query_or_url = query_or_url.strip()
+    logger.info(f"[Extract] Starting extraction for: {query_or_url}")
+
+    # If input is plain text, resolve to YouTube URL via search first
     if not (query_or_url.startswith("http://") or query_or_url.startswith("https://")):
-        cleaned = re.sub(r"(?i)\b(by|song|songs|track|official|video|audio|lyrics)\b", " ", query_or_url)
+        cleaned = re.sub(
+            r"(?i)\b(by|song|songs|track|official|video|audio|lyrics)\b",
+            " ", query_or_url
+        )
         cleaned = " ".join(cleaned.split()) or query_or_url
+
         yt_candidates = await search_youtube(cleaned, limit=5)
         if not yt_candidates and cleaned != query_or_url:
             yt_candidates = await search_youtube(query_or_url, limit=5)
+
         if yt_candidates:
-            first_target = yt_candidates[0].get("url")
-            if first_target:
-                query_or_url = first_target
+            first_url = yt_candidates[0].get("url")
+            if first_url:
+                logger.info(f"[Extract] Resolved text '{query_or_url}' → {first_url}")
+                query_or_url = first_url
+            else:
+                logger.warning(f"[Extract] Search returned results but no URL for: {query_or_url}")
+                return None
+        else:
+            logger.warning(f"[Extract] No search results for: {query_or_url}")
+            return None
+
+    # Clean URL to remove playlist/tracking params
+    target = _clean_youtube_url(query_or_url)
 
     loop = asyncio.get_running_loop()
 
     def _extract():
-        # 1. Primary extraction with configured options (uses cookies if available)
+        # ── Tier 1: Primary extraction (cookies + default client) ──
         try:
-            info = ytdl.extract_info(query_or_url, download=False)
-            if info:
-                entry = info["entries"][0] if "entries" in info and info["entries"] else info
-                if entry and _get_stream_url(entry):
-                    res = _format_track_entry(entry, query_or_url, requester)
-                    print(f"[AudioSource] Extracted successfully: {res.get('title')}")
-                    return res
-        except Exception:
-            pass
-
-        # 2. Pristine Android Client Fallback (Bypasses any expired/broken cookie issues)
-        target = query_or_url
-        if "youtube.com" in query_or_url or "youtu.be" in query_or_url:
-            vid_id = None
-            if "v=" in query_or_url:
-                vid_id = query_or_url.split("v=")[1].split("&")[0]
-            elif "youtu.be/" in query_or_url:
-                vid_id = query_or_url.split("youtu.be/")[1].split("?")[0]
-            if vid_id:
-                target = f"https://www.youtube.com/watch?v={vid_id}"
-
-        try:
-            anon_opts = {
-                "format": "ba/b/bestaudio/best",
-                "noplaylist": True,
-                "nocheckcertificate": True,
-                "quiet": True,
-                "no_warnings": True,
-                "logger": SilentYTDLLogger(),
-                "extractor_args": {
-                    "youtube": {
-                        "player_client": ["android", "web_embedded", "mweb", "ios", "tv"]
-                    }
-                },
-                "http_headers": {
-                    "User-Agent": "Mozilla/5.0 (Linux; Android 13; SM-G981B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/116.0.0.0 Mobile Safari/537.36",
-                }
-            }
-            with yt_dlp.YoutubeDL(anon_opts) as anon_ytdl:
-                info = anon_ytdl.extract_info(target, download=False)
+            logger.info(f"[Extract/Tier1] Trying primary extraction for: {target}")
+            opts = _primary_opts()
+            with yt_dlp.YoutubeDL(opts) as ydl:
+                info = ydl.extract_info(target, download=False)
                 if info:
                     entry = info["entries"][0] if "entries" in info and info["entries"] else info
-                    if entry and _get_stream_url(entry):
+                    stream = _get_stream_url(entry)
+                    if stream:
                         res = _format_track_entry(entry, target, requester)
-                        print(f"[AudioSource] Extracted via Android client: {res.get('title')}")
+                        logger.info(f"[Extract/Tier1] ✅ Success: {res['title']}")
                         return res
-        except Exception:
-            pass
+                    else:
+                        logger.warning(f"[Extract/Tier1] Got info but no stream URL for: {target}")
+        except Exception as e:
+            logger.warning(f"[Extract/Tier1] Failed for {target}: {e}")
 
-        # 3. Third pass: try with web_embedded / tv / web clients
+        # ── Tier 2: Android client (anonymous, datacenter-friendly) ──
         try:
-            fallback_opts = {
-                "format": "ba/b/bestaudio/best",
-                "noplaylist": True,
-                "nocheckcertificate": True,
-                "quiet": True,
-                "no_warnings": True,
-                "logger": SilentYTDLLogger(),
-                "extractor_args": {
-                    "youtube": {
-                        "player_client": ["web_embedded", "tv", "web"]
-                    }
-                }
-            }
-            with yt_dlp.YoutubeDL(fallback_opts) as fb_ytdl:
-                info = fb_ytdl.extract_info(target, download=False)
+            logger.info(f"[Extract/Tier2] Trying Android client for: {target}")
+            opts = _android_opts()
+            with yt_dlp.YoutubeDL(opts) as ydl:
+                info = ydl.extract_info(target, download=False)
                 if info:
                     entry = info["entries"][0] if "entries" in info and info["entries"] else info
-                    if entry and _get_stream_url(entry):
+                    stream = _get_stream_url(entry)
+                    if stream:
                         res = _format_track_entry(entry, target, requester)
-                        print(f"[AudioSource] Extracted via TV client: {res.get('title')}")
+                        logger.info(f"[Extract/Tier2] ✅ Success (Android): {res['title']}")
                         return res
-        except Exception:
-            pass
+                    else:
+                        logger.warning(f"[Extract/Tier2] Got info but no stream URL for: {target}")
+        except Exception as e:
+            logger.warning(f"[Extract/Tier2] Failed for {target}: {e}")
 
-        print(f"[AudioSource] Could not extract audio for: {query_or_url}")
+        # ── Tier 3: Web client (with cookies) ──
+        try:
+            logger.info(f"[Extract/Tier3] Trying Web client for: {target}")
+            opts = _web_opts()
+            with yt_dlp.YoutubeDL(opts) as ydl:
+                info = ydl.extract_info(target, download=False)
+                if info:
+                    entry = info["entries"][0] if "entries" in info and info["entries"] else info
+                    stream = _get_stream_url(entry)
+                    if stream:
+                        res = _format_track_entry(entry, target, requester)
+                        logger.info(f"[Extract/Tier3] ✅ Success (Web): {res['title']}")
+                        return res
+                    else:
+                        logger.warning(f"[Extract/Tier3] Got info but no stream URL for: {target}")
+        except Exception as e:
+            logger.warning(f"[Extract/Tier3] Failed for {target}: {e}")
+
+        logger.error(f"[Extract] ❌ ALL TIERS FAILED for: {target}")
         return None
 
     return await loop.run_in_executor(None, _extract)
 
 
+# ─── Autoplay Recommendation ─────────────────────────────────────
+
 async def get_recommended_track(seed_track: dict, exclude_ids: Set[str] = None) -> Optional[dict]:
-    """Finds a distinct, similar song matching the exact artist, genre, and album vibe for Autoplay."""
+    """Find a similar song from the same artist/genre for autoplay continuity."""
     if not seed_track:
         return None
     if exclude_ids is None:
@@ -357,18 +453,21 @@ async def get_recommended_track(seed_track: dict, exclude_ids: Set[str] = None) 
     title = seed_track.get("title", "")
     channel = seed_track.get("channel", "")
 
-    # Clean query from noise
+    # Clean noise from title
     clean_title = re.sub(r"[\(\[].*?[\)\]]", "", title)
-    clean_title = re.sub(r"(?i)\b(official|video|audio|lyrics|hd|4k|remix|slowed|reverb|version|ft|feat|visualizer)\b", "", clean_title).strip()
-    seed_title_words = set(w.lower() for w in re.findall(r"\w+", clean_title) if len(w) > 2)
+    clean_title = re.sub(
+        r"(?i)\b(official|video|audio|lyrics|hd|4k|remix|slowed|reverb|version|ft|feat|visualizer)\b",
+        "", clean_title
+    ).strip()
+    seed_words = set(w.lower() for w in re.findall(r"\w+", clean_title) if len(w) > 2)
 
-    # Targeted artist and album discovery queries (prevents random genre jumping)
+    # Build artist-targeted search queries
     queries = []
     if channel and channel != "Unknown Artist":
         queries.extend([
             f"{channel} songs official audio",
             f"{channel} top tracks",
-            f"{channel} {clean_title} audio"
+            f"{channel} {clean_title} audio",
         ])
     else:
         queries.append(f"{clean_title} official audio")
@@ -384,19 +483,21 @@ async def get_recommended_track(seed_track: dict, exclude_ids: Set[str] = None) 
 
     seen_ids = set(exclude_ids)
     if seed_track.get("id"):
-        seen_ids.add(str(seed_track.get("id")))
+        seen_ids.add(str(seed_track["id"]))
 
-    # Blacklist keywords that ruin music flow (jukeboxes, 1-hour loops, podcasts)
-    blacklist = ["jukebox", "full album", "hour", "hours", "podcast", "mashup", "compilation", "all songs", "live stream"]
+    # Blacklist keywords that ruin music flow
+    blacklist = [
+        "jukebox", "full album", "hour", "hours", "podcast",
+        "mashup", "compilation", "all songs", "live stream",
+    ]
 
-    filtered_candidates = []
+    filtered = []
     for res in all_candidates:
         res_id = str(res.get("id"))
         if not res_id or res_id in seen_ids:
             continue
 
         duration = res.get("duration", 0)
-        # Only accept genuine music tracks between 60s and 450s (7.5 mins)
         if duration and (duration < 60 or duration > 450):
             continue
 
@@ -404,58 +505,58 @@ async def get_recommended_track(seed_track: dict, exclude_ids: Set[str] = None) 
         if any(bad in res_title for bad in blacklist):
             continue
 
+        # Skip near-duplicate titles
         res_clean = re.sub(r"[\(\[].*?[\)\]]", "", res_title)
-        res_clean = re.sub(r"(?i)\b(official|video|audio|lyrics|hd|4k|remix|slowed|reverb|version|ft|feat|visualizer)\b", "", res_clean).strip()
+        res_clean = re.sub(
+            r"(?i)\b(official|video|audio|lyrics|hd|4k|remix|slowed|reverb|version|ft|feat|visualizer)\b",
+            "", res_clean
+        ).strip()
         res_words = set(w.lower() for w in re.findall(r"\w+", res_clean) if len(w) > 2)
 
-        # Skip if title is duplicate/cover upload of the exact same seed song
-        if seed_title_words and len(seed_title_words.intersection(res_words)) >= max(1, len(seed_title_words) - 1):
+        if seed_words and len(seed_words.intersection(res_words)) >= max(1, len(seed_words) - 1):
             continue
 
         seen_ids.add(res_id)
-        filtered_candidates.append(res)
+        filtered.append(res)
 
-    # Pick a candidate from top results for authentic genre continuity
-    if filtered_candidates:
-        choice_pool = filtered_candidates[:3]
+    if filtered:
+        choice_pool = filtered[:3]
         selected = random.choice(choice_pool)
-        track_info = await extract_audio_info(selected.get("url") or selected.get("title"), requester="Autoplay ✦")
+        track_info = await extract_audio_info(
+            selected.get("url") or selected.get("title"),
+            requester="Autoplay ✦",
+        )
         if track_info:
             return track_info
 
     return None
 
 
+# ─── Buffered Audio Source ────────────────────────────────────────
+
 class BufferedAudioSource(discord.AudioSource):
     """
-    Pre-buffered AudioSource that runs a dedicated reader thread holding 3-5 seconds
-    of PCM audio chunks ahead of time in a thread-safe ring buffer.
-    
-    This completely eliminates 1-2 second voice drops and buffering pauses caused
-    by YouTube CDN rate-limiting or network packet jitter.
+    Pre-buffered AudioSource with a dedicated reader thread holding
+    3-5 seconds of PCM audio ahead of time in a ring buffer.
+    Eliminates voice drops from YouTube CDN rate-limiting.
     """
 
     def __init__(self, raw_source: discord.FFmpegPCMAudio, buffer_seconds: float = 4.0):
         self.raw_source = raw_source
-        self.frame_size = 3840  # 20ms of 48kHz 16-bit stereo PCM (discord standard)
-        max_chunks = int(buffer_seconds * 50)  # 50 frames = 1 second
+        self.frame_size = 3840  # 20ms of 48kHz 16-bit stereo PCM
+        max_chunks = int(buffer_seconds * 50)  # 50 frames per second
         self.buffer = collections.deque(maxlen=max_chunks)
-        
         self._lock = threading.Lock()
         self._stopped = threading.Event()
         self._eof = False
-        
-        # Start pre-buffering thread
         self._thread = threading.Thread(target=self._buffer_worker, daemon=True)
         self._thread.start()
 
     def _buffer_worker(self):
         while not self._stopped.is_set():
-            # If buffer is full, sleep briefly
             if len(self.buffer) >= self.buffer.maxlen:
                 time.sleep(0.015)
                 continue
-
             try:
                 data = self.raw_source.read()
                 if not data:
@@ -463,7 +564,7 @@ class BufferedAudioSource(discord.AudioSource):
                     break
                 with self._lock:
                     self.buffer.append(data)
-            except Exception as e:
+            except Exception:
                 self._eof = True
                 break
 
@@ -473,11 +574,11 @@ class BufferedAudioSource(discord.AudioSource):
                 return self.buffer.popleft()
         if self._eof:
             return b""
-        # Seamless zero-lag direct read fallback (avoids inserting silence frame during startup)
+        # Direct read fallback during buffer warmup
         try:
-            direct_data = self.raw_source.read()
-            if direct_data:
-                return direct_data
+            data = self.raw_source.read()
+            if data:
+                return data
         except Exception:
             pass
         return b""
@@ -488,8 +589,10 @@ class BufferedAudioSource(discord.AudioSource):
             self.raw_source.cleanup()
 
 
+# ─── Discord Audio Source ─────────────────────────────────────────
+
 class YTDLSource(discord.PCMVolumeTransformer):
-    """Discord AudioSource created using pre-buffered FFmpeg from raw YouTube audio streams."""
+    """Discord AudioSource created from pre-buffered FFmpeg YouTube audio."""
 
     def __init__(self, source, *, data, volume=0.8):
         super().__init__(source, volume)
@@ -500,18 +603,21 @@ class YTDLSource(discord.PCMVolumeTransformer):
 
     @classmethod
     async def create_source(cls, track_info: dict, *, volume=0.8, filter_name="none", seek_seconds=0):
-        """Creates a BufferedAudioSource with audio splitting and real-time DSP filter."""
+        """Create a BufferedAudioSource with audio filter and optional seek."""
         stream_url = track_info.get("stream_url")
-        
-        # If stream_url is missing or expired, refresh it
+
+        # Refresh stream URL if missing or expired
         if not stream_url:
-            refreshed = await extract_audio_info(track_info.get("webpage_url") or track_info.get("title"))
+            logger.info(f"[Source] Refreshing stream URL for: {track_info.get('title')}")
+            refreshed = await extract_audio_info(
+                track_info.get("webpage_url") or track_info.get("title")
+            )
             if refreshed:
                 track_info.update(refreshed)
                 stream_url = track_info.get("stream_url")
 
         if not stream_url:
-            raise ValueError(f"Could not resolve audio stream for track: {track_info.get('title')}")
+            raise ValueError(f"Could not resolve audio stream for: {track_info.get('title')}")
 
         before_opts = FFMPEG_BEFORE_OPTIONS
         if seek_seconds and seek_seconds > 0:
@@ -519,12 +625,12 @@ class YTDLSource(discord.PCMVolumeTransformer):
 
         filter_opts = AUDIO_FILTERS.get(filter_name, FFMPEG_OPTIONS)
 
-        raw_ffmpeg_source = discord.FFmpegPCMAudio(
+        raw_ffmpeg = discord.FFmpegPCMAudio(
             stream_url,
             executable=FFMPEG_EXECUTABLE,
             before_options=before_opts,
             options=filter_opts,
         )
 
-        buffered_source = BufferedAudioSource(raw_ffmpeg_source, buffer_seconds=4.0)
-        return cls(buffered_source, data=track_info, volume=volume)
+        buffered = BufferedAudioSource(raw_ffmpeg, buffer_seconds=4.0)
+        return cls(buffered, data=track_info, volume=volume)
