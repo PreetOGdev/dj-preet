@@ -75,6 +75,20 @@ if not cookie_file_path and raw_cookies:
     except Exception as e:
         print(f"[AudioSource] Cookie formatting note: {e}")
 
+class SilentYTDLLogger:
+    def debug(self, msg):
+        pass
+    def warning(self, msg):
+        pass
+    def error(self, msg):
+        # Suppress redundant YouTube captcha / sign-in warnings since fail-safe handles playback
+        if "Sign in to confirm" in msg or "Requested format is not available" in msg or "cookies" in msg:
+            return
+        # Only log critical unhandled errors
+        if not ("HTTP Error 403" in msg or "429" in msg):
+            print(f"[AudioSource/YTDL] {msg}")
+
+
 YTDL_OPTIONS = {
     "format": "ba/b/bestaudio/best",
     "outtmpl": "%(extractor)s-%(id)s-%(title)s.%(ext)s",
@@ -85,6 +99,7 @@ YTDL_OPTIONS = {
     "logtostderr": False,
     "quiet": True,
     "no_warnings": True,
+    "logger": SilentYTDLLogger(),
     "default_search": "ytsearch",
     "source_address": "0.0.0.0",
     "extractor_args": {
@@ -107,6 +122,7 @@ SEARCH_OPTIONS = {
     "skip_download": True,
     "quiet": True,
     "no_warnings": True,
+    "logger": SilentYTDLLogger(),
     "default_search": "ytsearch",
 }
 
