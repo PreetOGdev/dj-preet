@@ -113,7 +113,8 @@ async def slash_play(interaction: discord.Interaction, query: str):
         embed.add_field(name="Position in Queue", value=f"#{len(player.queue)}", inline=True)
         if track.thumbnail:
             embed.set_thumbnail(url=track.thumbnail)
-        embed.set_footer(text=f"Requested by {interaction.user.display_name} • Web: localhost:8000")
+        web_url = os.getenv("RENDER_EXTERNAL_URL") or "http://localhost:8000"
+        embed.set_footer(text=f"Requested by {interaction.user.display_name} • Web: {web_url}")
 
         await interaction.followup.send(embed=embed)
 

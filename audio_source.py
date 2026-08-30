@@ -203,6 +203,20 @@ async def search_youtube(query: str, limit: int = 8):
 
 async def extract_audio_info(query_or_url: str, requester: str = "Web User"):
     """Extracts direct audio stream URL and detailed track metadata with multi-tier fallback."""
+    query_or_url = query_or_url.strip()
+
+    # If query is text, clean search noise and resolve top official YouTube track first
+    if not (query_or_url.startswith("http://") or query_or_url.startswith("https://")):
+        cleaned = re.sub(r"(?i)\b(by|song|songs|track|official|video|audio|lyrics)\b", " ", query_or_url)
+        cleaned = " ".join(cleaned.split()) or query_or_url
+        yt_candidates = await search_youtube(cleaned, limit=5)
+        if not yt_candidates and cleaned != query_or_url:
+            yt_candidates = await search_youtube(query_or_url, limit=5)
+        if yt_candidates:
+            first_target = yt_candidates[0].get("url")
+            if first_target:
+                query_or_url = first_target
+
     loop = asyncio.get_running_loop()
 
     def _extract():
