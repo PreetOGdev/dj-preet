@@ -69,14 +69,42 @@ async def run_web_server():
     await server.serve()
 
 
+async def render_keep_alive():
+    """
+    Prevents Render Free instances from sleeping after 15 minutes of inactivity
+    by sending an inbound HTTP ping to its public URL every 8 minutes.
+    """
+    await asyncio.sleep(25)  # Wait for web server to start up
+    render_url = os.getenv("RENDER_EXTERNAL_URL", "").rstrip("/")
+    if not render_url:
+        render_url = os.getenv("APP_URL", "").rstrip("/")
+    
+    if not render_url:
+        logger.info("ℹ️ Local environment detected. Render keep-alive pinger idle.")
+        return
+
+    logger.info(f"🔄 Render 24/7 Keep-Alive active for: {render_url}")
+    import aiohttp
+    while True:
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(f"{render_url}/api/status", timeout=15) as resp:
+                    if resp.status == 200:
+                        logger.info("💓 Render Keep-Alive: Pinged public URL (Server staying awake)")
+        except Exception as e:
+            logger.debug(f"Render keep-alive ping note: {e}")
+        await asyncio.sleep(480)  # Ping every 8 minutes (Render sleeps after 15 mins)
+
+
 async def main():
     setup_player_listener()
     
-    # Run bot, web server, and periodic ticker concurrently
+    # Run bot, web server, periodic ticker, and 24/7 keep-alive pinger concurrently
     await asyncio.gather(
         run_web_server(),
         run_bot(),
         playback_ticker(),
+        render_keep_alive(),
         return_exceptions=True
     )
 

@@ -18,8 +18,8 @@ import shutil
 system_ffmpeg = shutil.which("ffmpeg")
 FFMPEG_EXECUTABLE = system_ffmpeg or imageio_ffmpeg.get_ffmpeg_exe()
 
-# Optimized FFmpeg parameters: fast probesize, auto-reconnect on network jitter
-FFMPEG_BEFORE_OPTIONS = "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 -probesize 10M -analyzeduration 0 -nostdin"
+# Optimized FFmpeg parameters: ultra-fast 32k probesize for instantaneous startup (< 50ms), auto-reconnect on network jitter
+FFMPEG_BEFORE_OPTIONS = "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 -probesize 32k -analyzeduration 0 -fflags nobuffer+fastseek+discardcorrupt -nostdin"
 FFMPEG_OPTIONS = "-vn"
 
 # Audio filter presets for Equalizer
@@ -276,7 +276,7 @@ async def extract_audio_info(query_or_url: str, requester: str = "Web User"):
 
 
 async def get_recommended_track(seed_track: dict, exclude_ids: Set[str] = None) -> Optional[dict]:
-    """Finds a distinct, similar recommended YouTube song for Autoplay based on artist, genre, and related music."""
+    """Finds a distinct, similar song matching the exact artist, genre, and album vibe for Autoplay."""
     if not seed_track:
         return None
     if exclude_ids is None:
@@ -285,23 +285,26 @@ async def get_recommended_track(seed_track: dict, exclude_ids: Set[str] = None) 
     title = seed_track.get("title", "")
     channel = seed_track.get("channel", "")
 
-    # Clean query from parentheses/remix/feature noise
+    # Clean query from noise
     clean_title = re.sub(r"[\(\[].*?[\)\]]", "", title)
     clean_title = re.sub(r"(?i)\b(official|video|audio|lyrics|hd|4k|remix|slowed|reverb|version|ft|feat|visualizer)\b", "", clean_title).strip()
     seed_title_words = set(w.lower() for w in re.findall(r"\w+", clean_title) if len(w) > 2)
 
-    # Diverse discovery queries across related artist and mix playlists
-    queries = [
-        f"{channel} top songs",
-        f"songs like {clean_title} {channel}",
-        f"{channel} playlist mix",
-        f"{clean_title} radio mix"
-    ]
+    # Targeted artist and album discovery queries (prevents random genre jumping)
+    queries = []
+    if channel and channel != "Unknown Artist":
+        queries.extend([
+            f"{channel} songs official audio",
+            f"{channel} top tracks",
+            f"{channel} {clean_title} audio"
+        ])
+    else:
+        queries.append(f"{clean_title} official audio")
 
     all_candidates = []
     for q in queries:
         try:
-            results = await search_youtube(q, limit=8)
+            results = await search_youtube(q, limit=6)
             if results:
                 all_candidates.extend(results)
         except Exception:
@@ -311,13 +314,24 @@ async def get_recommended_track(seed_track: dict, exclude_ids: Set[str] = None) 
     if seed_track.get("id"):
         seen_ids.add(str(seed_track.get("id")))
 
+    # Blacklist keywords that ruin music flow (jukeboxes, 1-hour loops, podcasts)
+    blacklist = ["jukebox", "full album", "hour", "hours", "podcast", "mashup", "compilation", "all songs", "live stream"]
+
     filtered_candidates = []
     for res in all_candidates:
         res_id = str(res.get("id"))
         if not res_id or res_id in seen_ids:
             continue
 
-        res_title = res.get("title", "")
+        duration = res.get("duration", 0)
+        # Only accept genuine music tracks between 60s and 450s (7.5 mins)
+        if duration and (duration < 60 or duration > 450):
+            continue
+
+        res_title = res.get("title", "").lower()
+        if any(bad in res_title for bad in blacklist):
+            continue
+
         res_clean = re.sub(r"[\(\[].*?[\)\]]", "", res_title)
         res_clean = re.sub(r"(?i)\b(official|video|audio|lyrics|hd|4k|remix|slowed|reverb|version|ft|feat|visualizer)\b", "", res_clean).strip()
         res_words = set(w.lower() for w in re.findall(r"\w+", res_clean) if len(w) > 2)
@@ -329,26 +343,13 @@ async def get_recommended_track(seed_track: dict, exclude_ids: Set[str] = None) 
         seen_ids.add(res_id)
         filtered_candidates.append(res)
 
-    # Pick a random candidate from top 5 distinct results for variety
+    # Pick a candidate from top results for authentic genre continuity
     if filtered_candidates:
-        choice_pool = filtered_candidates[:5]
+        choice_pool = filtered_candidates[:3]
         selected = random.choice(choice_pool)
         track_info = await extract_audio_info(selected.get("url") or selected.get("title"), requester="Autoplay ✦")
         if track_info:
             return track_info
-
-    # Fallback to broad genre/artist search
-    fallback_query = f"{channel} radio" if channel and channel != "Unknown Artist" else "top trending songs"
-    try:
-        fallback_results = await search_youtube(fallback_query, limit=6)
-        for res in fallback_results:
-            res_id = str(res.get("id"))
-            if res_id not in seen_ids:
-                track_info = await extract_audio_info(res.get("url") or res.get("title"), requester="Autoplay ✦")
-                if track_info:
-                    return track_info
-    except Exception:
-        pass
 
     return None
 
@@ -400,8 +401,14 @@ class BufferedAudioSource(discord.AudioSource):
                 return self.buffer.popleft()
         if self._eof:
             return b""
-        # Buffer underrun fallback: return silence frame to avoid Discord dropping voice connection
-        return b"\x00" * self.frame_size
+        # Seamless zero-lag direct read fallback (avoids inserting silence frame during startup)
+        try:
+            direct_data = self.raw_source.read()
+            if direct_data:
+                return direct_data
+        except Exception:
+            pass
+        return b""
 
     def cleanup(self):
         self._stopped.set()

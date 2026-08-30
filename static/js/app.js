@@ -544,30 +544,41 @@ function initSearch() {
     }
   });
 
+  let searchAbortController = null;
+
   searchInput.addEventListener("input", (e) => {
     const val = searchInput.value.trim();
     clearBtn.style.display = val ? "flex" : "none";
 
-    if (!val) {
+    if (!val || val.length < 2) {
       searchDropdown.style.display = "none";
+      if (searchAbortController) searchAbortController.abort();
       return;
     }
 
     clearTimeout(searchDebounceTimer);
     searchDebounceTimer = setTimeout(async () => {
+      if (searchAbortController) searchAbortController.abort();
+      searchAbortController = new AbortController();
+
       searchDropdown.style.display = "block";
       spinner.style.display = "inline-flex";
       searchResultsList.innerHTML = `<div style="padding: 16px; text-align: center; color: var(--text-muted);">Searching YouTube...</div>`;
 
       try {
-        const data = await apiCall(`/api/search?q=${encodeURIComponent(val)}&limit=8`);
+        const response = await fetch(`/api/search?q=${encodeURIComponent(val)}&limit=8`, {
+          signal: searchAbortController.signal
+        });
+        if (!response.ok) throw new Error("Search request failed");
+        const data = await response.json();
         spinner.style.display = "none";
         renderSearchResults(data.results);
       } catch (err) {
+        if (err.name === "AbortError") return;
         spinner.style.display = "none";
         searchResultsList.innerHTML = `<div style="padding: 16px; text-align: center; color: var(--accent-danger);">Search error: ${err.message}</div>`;
       }
-    }, 300);
+    }, 380);
   });
 
   // Direct Enter to queue if search or URL
