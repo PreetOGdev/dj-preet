@@ -248,50 +248,76 @@ async def extract_audio_info(query_or_url: str, requester: str = "Web User"):
     loop = asyncio.get_running_loop()
 
     def _extract():
-        # 1. Direct extraction with primary yt-dlp
+        # 1. Primary extraction with configured options (uses cookies if available)
         try:
             info = ytdl.extract_info(query_or_url, download=False)
             if info:
                 entry = info["entries"][0] if "entries" in info and info["entries"] else info
                 if entry and entry.get("url"):
                     return _format_track_entry(entry, query_or_url, requester)
-        except Exception as e:
-            print(f"[AudioSource] Direct extraction error for '{query_or_url}': {e}")
+        except Exception:
+            pass
 
-        # 2. Extract clean video ID and retry with alternative clients
+        # 2. Pristine Android Client Fallback (Bypasses any expired/broken cookie issues)
+        target = query_or_url
         if "youtube.com" in query_or_url or "youtu.be" in query_or_url:
-            try:
-                vid_id = None
-                if "v=" in query_or_url:
-                    vid_id = query_or_url.split("v=")[1].split("&")[0]
-                elif "youtu.be/" in query_or_url:
-                    vid_id = query_or_url.split("youtu.be/")[1].split("?")[0]
-                
-                target = f"https://www.youtube.com/watch?v={vid_id}" if vid_id else query_or_url
-                alt_opts = dict(YTDL_OPTIONS)
-                alt_opts["extractor_args"] = {"youtube": {"player_client": ["android", "mweb"]}}
-                with yt_dlp.YoutubeDL(alt_opts) as alt_ytdl:
-                    info = alt_ytdl.extract_info(target, download=False)
-                    if info:
-                        entry = info["entries"][0] if "entries" in info and info["entries"] else info
-                        if entry and entry.get("url"):
-                            return _format_track_entry(entry, query_or_url, requester)
-            except Exception as ex:
-                print(f"[AudioSource] Second-pass extraction error for '{query_or_url}': {ex}")
+            vid_id = None
+            if "v=" in query_or_url:
+                vid_id = query_or_url.split("v=")[1].split("&")[0]
+            elif "youtu.be/" in query_or_url:
+                vid_id = query_or_url.split("youtu.be/")[1].split("?")[0]
+            if vid_id:
+                target = f"https://www.youtube.com/watch?v={vid_id}"
 
-        # 3. Fallback: Search YouTube if query was text
-        if not (query_or_url.startswith("http://") or query_or_url.startswith("https://")):
-            try:
-                info = search_ytdl.extract_info(f"ytsearch1:{query_or_url}", download=False)
-                if info and "entries" in info and info["entries"]:
-                    first_url = info["entries"][0].get("url") or f"https://www.youtube.com/watch?v={info['entries'][0].get('id')}"
-                    info_ext = ytdl.extract_info(first_url, download=False)
-                    if info_ext:
-                        entry = info_ext["entries"][0] if "entries" in info_ext and info_ext["entries"] else info_ext
-                        if entry and entry.get("url"):
-                            return _format_track_entry(entry, first_url, requester)
-            except Exception:
-                pass
+        try:
+            anon_opts = {
+                "format": "ba/b/bestaudio/best",
+                "noplaylist": True,
+                "nocheckcertificate": True,
+                "quiet": True,
+                "no_warnings": True,
+                "logger": SilentYTDLLogger(),
+                "extractor_args": {
+                    "youtube": {
+                        "player_client": ["android", "android_creator"]
+                    }
+                },
+                "http_headers": {
+                    "User-Agent": "Mozilla/5.0 (Linux; Android 13; SM-G981B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/116.0.0.0 Mobile Safari/537.36",
+                }
+            }
+            with yt_dlp.YoutubeDL(anon_opts) as anon_ytdl:
+                info = anon_ytdl.extract_info(target, download=False)
+                if info:
+                    entry = info["entries"][0] if "entries" in info and info["entries"] else info
+                    if entry and entry.get("url"):
+                        return _format_track_entry(entry, target, requester)
+        except Exception:
+            pass
+
+        # 3. Third pass: try with mweb/ios clients
+        try:
+            mweb_opts = {
+                "format": "ba/b/bestaudio/best",
+                "noplaylist": True,
+                "nocheckcertificate": True,
+                "quiet": True,
+                "no_warnings": True,
+                "logger": SilentYTDLLogger(),
+                "extractor_args": {
+                    "youtube": {
+                        "player_client": ["mweb", "ios"]
+                    }
+                }
+            }
+            with yt_dlp.YoutubeDL(mweb_opts) as mweb_ytdl:
+                info = mweb_ytdl.extract_info(target, download=False)
+                if info:
+                    entry = info["entries"][0] if "entries" in info and info["entries"] else info
+                    if entry and entry.get("url"):
+                        return _format_track_entry(entry, target, requester)
+        except Exception:
+            pass
 
         return None
 
