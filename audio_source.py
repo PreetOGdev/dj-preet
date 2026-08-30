@@ -254,7 +254,9 @@ async def extract_audio_info(query_or_url: str, requester: str = "Web User"):
             if info:
                 entry = info["entries"][0] if "entries" in info and info["entries"] else info
                 if entry and entry.get("url"):
-                    return _format_track_entry(entry, query_or_url, requester)
+                    res = _format_track_entry(entry, query_or_url, requester)
+                    print(f"[AudioSource] Extracted successfully: {res.get('title')}")
+                    return res
         except Exception:
             pass
 
@@ -291,7 +293,9 @@ async def extract_audio_info(query_or_url: str, requester: str = "Web User"):
                 if info:
                     entry = info["entries"][0] if "entries" in info and info["entries"] else info
                     if entry and entry.get("url"):
-                        return _format_track_entry(entry, target, requester)
+                        res = _format_track_entry(entry, target, requester)
+                        print(f"[AudioSource] Extracted via Android client: {res.get('title')}")
+                        return res
         except Exception:
             pass
 
@@ -315,10 +319,13 @@ async def extract_audio_info(query_or_url: str, requester: str = "Web User"):
                 if info:
                     entry = info["entries"][0] if "entries" in info and info["entries"] else info
                     if entry and entry.get("url"):
-                        return _format_track_entry(entry, target, requester)
+                        res = _format_track_entry(entry, target, requester)
+                        print(f"[AudioSource] Extracted via TV client: {res.get('title')}")
+                        return res
         except Exception:
             pass
 
+        print(f"[AudioSource] Could not extract audio for: {query_or_url}")
         return None
 
     return await loop.run_in_executor(None, _extract)
