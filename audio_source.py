@@ -52,15 +52,30 @@ AUDIO_FILTERS = {
 }
 
 # ─── Cookie File Auto-Detection ───────────────────────────────────
+# CRITICAL: yt-dlp needs to READ and WRITE cookies during extraction.
+# Render mounts /etc/secrets/ as READ-ONLY, so we must COPY cookie
+# files to /tmp/ where yt-dlp can freely update them.
 cookie_file_path = None
+_writable_cookie_path = "/tmp/yt_cookies.txt"
 
-# 1. Render Secret Files directory (/etc/secrets)
+def _copy_to_writable(src_path: str) -> str:
+    """Copy a cookie file to a writable location (/tmp/) for yt-dlp."""
+    import shutil as _shutil
+    try:
+        _shutil.copy2(src_path, _writable_cookie_path)
+        logger.info(f"[Cookies] Copied {src_path} → {_writable_cookie_path} (writable)")
+        return _writable_cookie_path
+    except Exception as e:
+        logger.warning(f"[Cookies] Could not copy {src_path} to /tmp/: {e}")
+        return src_path  # Fall back to original path
+
+# 1. Render Secret Files directory (/etc/secrets) — READ-ONLY on Render!
 if os.path.exists("/etc/secrets"):
     for fname in os.listdir("/etc/secrets"):
         fpath = os.path.join("/etc/secrets", fname)
         if os.path.isfile(fpath):
-            cookie_file_path = fpath
-            logger.info(f"[Cookies] Loaded Render Secret File: {fpath}")
+            logger.info(f"[Cookies] Found Render Secret File: {fpath}")
+            cookie_file_path = _copy_to_writable(fpath)
             break
 
 # 2. Local workspace directory
@@ -76,8 +91,7 @@ if not cookie_file_path:
 raw_cookies = os.getenv("YOUTUBE_COOKIES", "").strip()
 if not cookie_file_path and raw_cookies:
     try:
-        temp_dir = "/tmp" if os.path.exists("/tmp") else os.path.dirname(__file__)
-        cookie_file_path = os.path.join(temp_dir, "youtube_cookies.txt")
+        cookie_file_path = _writable_cookie_path
 
         formatted_cookies = raw_cookies
         if not formatted_cookies.startswith("# Netscape HTTP Cookie File"):
@@ -106,8 +120,10 @@ if not cookie_file_path and raw_cookies:
         logger.warning(f"[Cookies] Could not create cookie file from env var: {e}")
         cookie_file_path = None
 
-if not cookie_file_path:
-    logger.info("[Cookies] No cookie file found — running without cookies")
+if cookie_file_path:
+    logger.info(f"[Cookies] ✅ Using cookie file: {cookie_file_path}")
+else:
+    logger.warning("[Cookies] ⚠️ No cookie file found — YouTube may block datacenter requests")
 
 
 # ─── yt-dlp Logger (suppresses noise, logs real errors) ───────────
@@ -149,9 +165,8 @@ def _primary_opts() -> dict:
 
 
 def _android_opts() -> dict:
-    """Android client bypass — works on datacenter IPs without cookies."""
+    """Android client — uses cookies since Render datacenter IPs are flagged."""
     opts = _base_opts()
-    opts.pop("cookiefile", None)  # No cookies for anonymous extraction
     opts["extractor_args"] = {
         "youtube": {"player_client": ["android"]}
     }
