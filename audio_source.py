@@ -1,3 +1,4 @@
+import os
 import asyncio
 import collections
 import io
@@ -30,6 +31,18 @@ AUDIO_FILTERS = {
     "karaoke": "-vn -af pan=stereo|c0=c0-c1|c1=c1-c0",
 }
 
+# Optional Cookie file handling (for cloud environments like Render)
+cookie_file_path = None
+raw_cookies = os.getenv("YOUTUBE_COOKIES", "").strip()
+if raw_cookies:
+    try:
+        temp_dir = "/tmp" if os.path.exists("/tmp") else os.path.dirname(__file__)
+        cookie_file_path = os.path.join(temp_dir, "youtube_cookies.txt")
+        with open(cookie_file_path, "w", encoding="utf-8") as f:
+            f.write(raw_cookies)
+    except Exception as e:
+        print(f"[AudioSource] Failed to write cookie file: {e}")
+
 YTDL_OPTIONS = {
     "format": "bestaudio/best",
     "outtmpl": "%(extractor)s-%(id)s-%(title)s.%(ext)s",
@@ -44,14 +57,17 @@ YTDL_OPTIONS = {
     "source_address": "0.0.0.0",
     "extractor_args": {
         "youtube": {
-            "player_client": ["android", "ios", "mweb", "web"]
+            "player_client": ["android", "android_creator"]
         }
     },
     "http_headers": {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
+        "User-Agent": "Mozilla/5.0 (Linux; Android 13; SM-G981B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/116.0.0.0 Mobile Safari/537.36",
         "Accept-Language": "en-US,en;q=0.9",
     }
 }
+
+if cookie_file_path and os.path.exists(cookie_file_path):
+    YTDL_OPTIONS["cookiefile"] = cookie_file_path
 
 SEARCH_OPTIONS = {
     "format": "bestaudio/best",
@@ -62,10 +78,13 @@ SEARCH_OPTIONS = {
     "default_search": "ytsearch",
     "extractor_args": {
         "youtube": {
-            "player_client": ["android", "web"]
+            "player_client": ["android", "android_creator"]
         }
     }
 }
+
+if cookie_file_path and os.path.exists(cookie_file_path):
+    SEARCH_OPTIONS["cookiefile"] = cookie_file_path
 
 ytdl = yt_dlp.YoutubeDL(YTDL_OPTIONS)
 search_ytdl = yt_dlp.YoutubeDL(SEARCH_OPTIONS)
@@ -160,7 +179,7 @@ async def extract_audio_info(query_or_url: str, requester: str = "Web User"):
     loop = asyncio.get_running_loop()
 
     def _extract():
-        # 1. Direct extraction with primary options
+        # 1. Direct extraction with android / android_creator clients
         try:
             info = ytdl.extract_info(query_or_url, download=False)
             if info:
@@ -170,7 +189,7 @@ async def extract_audio_info(query_or_url: str, requester: str = "Web User"):
         except Exception as e:
             print(f"[AudioSource] First-pass extraction error for '{query_or_url}': {e}")
 
-        # 2. If it's a YouTube URL, extract clean video ID and retry with iOS/Android client
+        # 2. Extract clean video ID and retry
         if "youtube.com" in query_or_url or "youtu.be" in query_or_url:
             try:
                 vid_id = None
@@ -180,14 +199,11 @@ async def extract_audio_info(query_or_url: str, requester: str = "Web User"):
                     vid_id = query_or_url.split("youtu.be/")[1].split("?")[0]
                 
                 target = f"https://www.youtube.com/watch?v={vid_id}" if vid_id else query_or_url
-                fallback_opts = dict(YTDL_OPTIONS)
-                fallback_opts["extractor_args"] = {"youtube": {"player_client": ["ios", "android"]}}
-                with yt_dlp.YoutubeDL(fallback_opts) as fallback_ytdl:
-                    info = fallback_ytdl.extract_info(target, download=False)
-                    if info:
-                        entry = info["entries"][0] if "entries" in info and info["entries"] else info
-                        if entry and entry.get("url"):
-                            return _format_track_entry(entry, query_or_url, requester)
+                info = ytdl.extract_info(target, download=False)
+                if info:
+                    entry = info["entries"][0] if "entries" in info and info["entries"] else info
+                    if entry and entry.get("url"):
+                        return _format_track_entry(entry, query_or_url, requester)
             except Exception as ex:
                 print(f"[AudioSource] Second-pass extraction error for '{query_or_url}': {ex}")
 
@@ -197,20 +213,15 @@ async def extract_audio_info(query_or_url: str, requester: str = "Web User"):
                 info = search_ytdl.extract_info(f"ytsearch1:{query_or_url}", download=False)
                 if info and "entries" in info and info["entries"]:
                     first_url = info["entries"][0].get("url") or f"https://www.youtube.com/watch?v={info['entries'][0].get('id')}"
-                    return _extract_single(first_url, requester)
+                    info_ext = ytdl.extract_info(first_url, download=False)
+                    if info_ext:
+                        entry = info_ext["entries"][0] if "entries" in info_ext and info_ext["entries"] else info_ext
+                        if entry and entry.get("url"):
+                            return _format_track_entry(entry, first_url, requester)
             except Exception:
                 pass
 
         return None
-
-    def _extract_single(url: str, req: str):
-        try:
-            info = ytdl.extract_info(url, download=False)
-            entry = info["entries"][0] if "entries" in info and info["entries"] else info
-            if entry and entry.get("url"):
-                return _format_track_entry(entry, url, req)
-        except Exception:
-            return None
 
     return await loop.run_in_executor(None, _extract)
 
