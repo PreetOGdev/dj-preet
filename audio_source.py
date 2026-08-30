@@ -140,64 +140,92 @@ class _YTDLLogger:
 
 
 # ─── yt-dlp Option Profiles ──────────────────────────────────────
-# IMPORTANT: On Render datacenter IPs, YouTube's SABR experiment
-# often only serves combined video+audio formats (like itag 18/22),
-# NOT audio-only streams. We use permissive format strings that
-# accept ANY format with audio. FFmpeg's -vn strips the video.
+# 2026 YouTube Datacenter Strategy:
+# - YouTube's SABR experiment blocks direct format URLs on datacenter IPs
+# - "The page needs to be reloaded" = consent page, fix: player_skip=webpage
+# - "Requested format is not available" = SABR, fix: use non-SABR clients
+# - Cookies are REQUIRED on all tiers for datacenter IPs
+# - Deno JS runtime is REQUIRED for signature deciphering
 
 def _base_opts() -> dict:
     """Base options shared across all extraction profiles."""
     opts = {
-        "format": "bestaudio/best",  # Accept audio-only OR combined formats
+        "format": "bestaudio/best",
         "noplaylist": True,
         "nocheckcertificate": True,
         "quiet": True,
         "no_warnings": True,
         "logger": _YTDLLogger(),
         "source_address": "0.0.0.0",
+        "extractor_retries": 3,
     }
     if cookie_file_path and os.path.exists(cookie_file_path):
         opts["cookiefile"] = cookie_file_path
     return opts
 
 
-def _primary_opts() -> dict:
-    """Primary extraction: cookies + default client, permissive format."""
+def _tier1_opts() -> dict:
+    """Tier 1: Default client minus deprecated android_sdkless, skip webpage consent."""
     opts = _base_opts()
     opts["default_search"] = "ytsearch"
-    return opts
-
-
-def _android_opts() -> dict:
-    """Android client — datacenter-friendly, accepts ANY format."""
-    opts = _base_opts()
-    # On SABR-restricted IPs, Android may only serve itag 18 (360p combined)
-    opts["format"] = "best"  # Accept literally anything
     opts["extractor_args"] = {
-        "youtube": {"player_client": ["android"]}
-    }
-    opts["http_headers"] = {
-        "User-Agent": (
-            "com.google.android.youtube/19.29.37 "
-            "(Linux; U; Android 14) gzip"
-        ),
-    }
-    return opts
-
-
-def _web_opts() -> dict:
-    """Web client fallback — accepts ANY format."""
-    opts = _base_opts()
-    opts["format"] = "best"  # Accept literally anything
-    opts["extractor_args"] = {
-        "youtube": {"player_client": ["web"]}
+        "youtube": {
+            "player_client": ["default", "-android_sdkless"],
+            "player_skip": ["webpage"],  # Skip consent page ("page needs to be reloaded")
+        }
     }
     opts["http_headers"] = {
         "User-Agent": (
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
             "AppleWebKit/537.36 (KHTML, like Gecko) "
-            "Chrome/126.0.0.0 Safari/537.36"
+            "Chrome/131.0.0.0 Safari/537.36"
         ),
+    }
+    return opts
+
+
+def _tier2_opts() -> dict:
+    """Tier 2: mweb (mobile web) client — often bypasses SABR on datacenter IPs."""
+    opts = _base_opts()
+    opts["format"] = "best"
+    opts["extractor_args"] = {
+        "youtube": {
+            "player_client": ["mweb"],
+            "player_skip": ["webpage"],
+        }
+    }
+    opts["http_headers"] = {
+        "User-Agent": (
+            "Mozilla/5.0 (Linux; Android 14; SM-S928B) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/131.0.0.0 Mobile Safari/537.36"
+        ),
+    }
+    return opts
+
+
+def _tier3_opts() -> dict:
+    """Tier 3: tv client — legacy client less affected by SABR."""
+    opts = _base_opts()
+    opts["format"] = "best"
+    opts["extractor_args"] = {
+        "youtube": {
+            "player_client": ["tv"],
+            "player_skip": ["webpage"],
+        }
+    }
+    return opts
+
+
+def _tier4_opts() -> dict:
+    """Tier 4: web_embedded — embedded player client, different API path."""
+    opts = _base_opts()
+    opts["format"] = "best"
+    opts["extractor_args"] = {
+        "youtube": {
+            "player_client": ["web_embedded"],
+            "player_skip": ["webpage"],
+        }
     }
     return opts
 
@@ -402,93 +430,55 @@ async def extract_audio_info(query_or_url: str, requester: str = "Web User"):
 
     loop = asyncio.get_running_loop()
 
-    def _extract():
-        # ── Tier 1: Primary extraction (cookies + default client) ──
+    def _try_extract(tier_name: str, opts: dict) -> dict:
+        """Attempt extraction with given options. Returns track dict or None."""
         try:
-            logger.info(f"[Extract/Tier1] Trying primary extraction for: {target}")
-            opts = _primary_opts()
+            logger.info(f"[Extract/{tier_name}] Trying for: {target}")
             with yt_dlp.YoutubeDL(opts) as ydl:
+                # Log yt-dlp version on first tier for diagnostics
+                if tier_name == "Tier1":
+                    logger.info(f"[Extract] yt-dlp version: {yt_dlp.version.__version__}")
                 info = ydl.extract_info(target, download=False)
                 if info:
                     entry = info["entries"][0] if "entries" in info and info["entries"] else info
                     stream = _get_stream_url(entry)
                     if stream:
                         res = _format_track_entry(entry, target, requester)
-                        logger.info(f"[Extract/Tier1] ✅ Success: {res['title']}")
+                        logger.info(f"[Extract/{tier_name}] ✅ Success: {res['title']}")
                         return res
                     else:
-                        logger.warning(f"[Extract/Tier1] Got info but no stream URL for: {target}")
-        except Exception as e:
-            logger.warning(f"[Extract/Tier1] Failed for {target}: {e}")
-
-        # ── Tier 2: Android client (anonymous, datacenter-friendly) ──
-        try:
-            logger.info(f"[Extract/Tier2] Trying Android client for: {target}")
-            opts = _android_opts()
-            with yt_dlp.YoutubeDL(opts) as ydl:
-                info = ydl.extract_info(target, download=False)
-                if info:
-                    entry = info["entries"][0] if "entries" in info and info["entries"] else info
-                    stream = _get_stream_url(entry)
-                    if stream:
-                        res = _format_track_entry(entry, target, requester)
-                        logger.info(f"[Extract/Tier2] ✅ Success (Android): {res['title']}")
-                        return res
-                    else:
-                        logger.warning(f"[Extract/Tier2] Got info but no stream URL for: {target}")
-        except Exception as e:
-            logger.warning(f"[Extract/Tier2] Failed for {target}: {e}")
-
-        # ── Tier 3: Web client (with cookies) ──
-        try:
-            logger.info(f"[Extract/Tier3] Trying Web client for: {target}")
-            opts = _web_opts()
-            with yt_dlp.YoutubeDL(opts) as ydl:
-                info = ydl.extract_info(target, download=False)
-                if info:
-                    entry = info["entries"][0] if "entries" in info and info["entries"] else info
-                    stream = _get_stream_url(entry)
-                    if stream:
-                        res = _format_track_entry(entry, target, requester)
-                        logger.info(f"[Extract/Tier3] ✅ Success (Web): {res['title']}")
-                        return res
-                    else:
-                        logger.warning(f"[Extract/Tier3] Got info but no stream URL for: {target}")
-        except Exception as e:
-            logger.warning(f"[Extract/Tier3] Failed for {target}: {e}")
-
-        # ── Tier 4: Last resort — no format filter, dump diagnostics ──
-        try:
-            logger.info(f"[Extract/Tier4] Last resort (no format filter) for: {target}")
-            opts = _base_opts()
-            opts["format"] = None  # Accept literally ANY format
-            opts["listformats"] = False
-            with yt_dlp.YoutubeDL(opts) as ydl:
-                info = ydl.extract_info(target, download=False)
-                if info:
-                    entry = info["entries"][0] if "entries" in info and info["entries"] else info
-                    # Log available formats for diagnostics
-                    formats = entry.get("formats", [])
-                    logger.info(f"[Extract/Tier4] Available formats: {len(formats)}")
-                    for fmt in formats[:10]:
-                        logger.info(
-                            f"  itag={fmt.get('format_id')} "
-                            f"ext={fmt.get('ext')} "
-                            f"acodec={fmt.get('acodec','none')} "
-                            f"vcodec={fmt.get('vcodec','none')} "
-                            f"url={'YES' if fmt.get('url') else 'NO'}"
+                        # Log format diagnostics when we get info but no URL
+                        formats = entry.get("formats", [])
+                        logger.warning(
+                            f"[Extract/{tier_name}] Got info ({len(formats)} formats) but no stream URL. "
+                            f"SABR-only formats likely."
                         )
-                    stream = _get_stream_url(entry)
-                    if stream:
-                        res = _format_track_entry(entry, target, requester)
-                        logger.info(f"[Extract/Tier4] ✅ Success (last resort): {res['title']}")
-                        return res
-                    else:
-                        logger.error(f"[Extract/Tier4] {len(formats)} formats found but NONE have a playable URL")
+                        for fmt in formats[:5]:
+                            logger.info(
+                                f"  itag={fmt.get('format_id')} "
+                                f"ext={fmt.get('ext')} "
+                                f"acodec={fmt.get('acodec','none')} "
+                                f"url={'YES' if fmt.get('url') else 'NO'}"
+                            )
         except Exception as e:
-            logger.warning(f"[Extract/Tier4] Failed for {target}: {e}")
+            logger.warning(f"[Extract/{tier_name}] Failed: {e}")
+        return None
 
-        logger.error(f"[Extract] ❌ ALL TIERS FAILED for: {target}")
+    def _extract():
+        # Try each tier in order until one succeeds
+        tiers = [
+            ("Tier1-Default", _tier1_opts()),
+            ("Tier2-MobileWeb", _tier2_opts()),
+            ("Tier3-TV", _tier3_opts()),
+            ("Tier4-WebEmbed", _tier4_opts()),
+        ]
+
+        for tier_name, opts in tiers:
+            result = _try_extract(tier_name, opts)
+            if result:
+                return result
+
+        logger.error(f"[Extract] ❌ ALL {len(tiers)} TIERS FAILED for: {target}")
         return None
 
     return await loop.run_in_executor(None, _extract)

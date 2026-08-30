@@ -1,9 +1,9 @@
 FROM python:3.11-slim
 
-# Install FFmpeg for audio processing and curl for Deno install
-RUN apt-get update && apt-get install -y ffmpeg curl unzip && rm -rf /var/lib/apt/lists/*
+# Install FFmpeg, curl (for Deno), and ca-certificates
+RUN apt-get update && apt-get install -y ffmpeg curl unzip ca-certificates && rm -rf /var/lib/apt/lists/*
 
-# Install Deno — yt-dlp's preferred JS runtime for YouTube signature deciphering
+# Install Deno — yt-dlp's required JS runtime for YouTube signature deciphering
 RUN curl -fsSL https://deno.land/install.sh | DENO_INSTALL=/usr/local sh
 ENV DENO_DIR=/tmp/deno
 
@@ -12,6 +12,11 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
+
+# CRITICAL: Always upgrade yt-dlp to absolute latest on every deploy.
+# This step runs AFTER "COPY . ." so Docker cache never masks it.
+# YouTube changes its API frequently; stale yt-dlp = broken extraction.
+RUN pip install --no-cache-dir --upgrade yt-dlp
 
 # Expose web dashboard port
 EXPOSE 8000
