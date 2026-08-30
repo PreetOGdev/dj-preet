@@ -13,8 +13,10 @@ from typing import Optional, List, Dict, Any, Set
 import discord
 import imageio_ffmpeg
 import yt_dlp
+import shutil
 
-FFMPEG_EXECUTABLE = imageio_ffmpeg.get_ffmpeg_exe()
+system_ffmpeg = shutil.which("ffmpeg")
+FFMPEG_EXECUTABLE = system_ffmpeg or imageio_ffmpeg.get_ffmpeg_exe()
 
 # Optimized FFmpeg parameters: fast probesize, auto-reconnect on network jitter
 FFMPEG_BEFORE_OPTIONS = "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 -probesize 10M -analyzeduration 0 -nostdin"
@@ -23,12 +25,12 @@ FFMPEG_OPTIONS = "-vn"
 # Audio filter presets for Equalizer
 AUDIO_FILTERS = {
     "none": "-vn",
-    "bassboost": "-vn -af equalizer=f=60:width_type=h:width=50:g=10",
-    "superbass": "-vn -af equalizer=f=50:width_type=h:width=40:g=16",
-    "nightcore": "-vn -af asetrate=48000*1.22,aresample=48000,atempo=1.05",
-    "vaporwave": "-vn -af asetrate=48000*0.82,aresample=48000",
-    "8d": "-vn -af apulsator=hz=0.125",
-    "treble": "-vn -af equalizer=f=8000:width_type=h:width=1000:g=8",
+    "bassboost": "-vn -af bass=g=8:f=110:w=0.6",
+    "superbass": "-vn -af bass=g=14:f=90:w=0.8",
+    "nightcore": "-vn -af asetrate=48000*1.25,aresample=48000,atempo=1.05",
+    "vaporwave": "-vn -af asetrate=48000*0.82,aresample=48000,atempo=0.95",
+    "8d": "-vn -af apulsator=hz=0.125:amount=1.0",
+    "treble": "-vn -af treble=g=7:f=4000:w=0.7",
     "pop": "-vn -af equalizer=f=1000:width_type=h:width=200:g=4,equalizer=f=3000:width_type=h:width=500:g=3",
     "karaoke": "-vn -af pan=stereo|c0=c0-c1|c1=c1-c0",
 }
@@ -46,7 +48,7 @@ if raw_cookies:
         print(f"[AudioSource] Failed to write cookie file: {e}")
 
 YTDL_OPTIONS = {
-    "format": "bestaudio/best",
+    "format": "ba/b/bestaudio/best",
     "outtmpl": "%(extractor)s-%(id)s-%(title)s.%(ext)s",
     "restrictfilenames": True,
     "noplaylist": True,
@@ -59,11 +61,11 @@ YTDL_OPTIONS = {
     "source_address": "0.0.0.0",
     "extractor_args": {
         "youtube": {
-            "player_client": ["android", "android_creator"]
+            "player_client": ["web", "mweb", "android", "ios"]
         }
     },
     "http_headers": {
-        "User-Agent": "Mozilla/5.0 (Linux; Android 13; SM-G981B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/116.0.0.0 Mobile Safari/537.36",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
         "Accept-Language": "en-US,en;q=0.9",
     }
 }
@@ -72,17 +74,12 @@ if cookie_file_path and os.path.exists(cookie_file_path):
     YTDL_OPTIONS["cookiefile"] = cookie_file_path
 
 SEARCH_OPTIONS = {
-    "format": "bestaudio/best",
+    "format": "ba/b/bestaudio/best",
     "extract_flat": True,
     "skip_download": True,
     "quiet": True,
     "no_warnings": True,
     "default_search": "ytsearch",
-    "extractor_args": {
-        "youtube": {
-            "player_client": ["android", "android_creator"]
-        }
-    }
 }
 
 if cookie_file_path and os.path.exists(cookie_file_path):
@@ -181,7 +178,7 @@ async def extract_audio_info(query_or_url: str, requester: str = "Web User"):
     loop = asyncio.get_running_loop()
 
     def _extract():
-        # 1. Direct extraction with android / android_creator clients
+        # 1. Direct extraction with primary yt-dlp
         try:
             info = ytdl.extract_info(query_or_url, download=False)
             if info:
@@ -189,9 +186,9 @@ async def extract_audio_info(query_or_url: str, requester: str = "Web User"):
                 if entry and entry.get("url"):
                     return _format_track_entry(entry, query_or_url, requester)
         except Exception as e:
-            print(f"[AudioSource] First-pass extraction error for '{query_or_url}': {e}")
+            print(f"[AudioSource] Direct extraction error for '{query_or_url}': {e}")
 
-        # 2. Extract clean video ID and retry
+        # 2. Extract clean video ID and retry with alternative clients
         if "youtube.com" in query_or_url or "youtu.be" in query_or_url:
             try:
                 vid_id = None
@@ -201,11 +198,14 @@ async def extract_audio_info(query_or_url: str, requester: str = "Web User"):
                     vid_id = query_or_url.split("youtu.be/")[1].split("?")[0]
                 
                 target = f"https://www.youtube.com/watch?v={vid_id}" if vid_id else query_or_url
-                info = ytdl.extract_info(target, download=False)
-                if info:
-                    entry = info["entries"][0] if "entries" in info and info["entries"] else info
-                    if entry and entry.get("url"):
-                        return _format_track_entry(entry, query_or_url, requester)
+                alt_opts = dict(YTDL_OPTIONS)
+                alt_opts["extractor_args"] = {"youtube": {"player_client": ["android", "mweb"]}}
+                with yt_dlp.YoutubeDL(alt_opts) as alt_ytdl:
+                    info = alt_ytdl.extract_info(target, download=False)
+                    if info:
+                        entry = info["entries"][0] if "entries" in info and info["entries"] else info
+                        if entry and entry.get("url"):
+                            return _format_track_entry(entry, query_or_url, requester)
             except Exception as ex:
                 print(f"[AudioSource] Second-pass extraction error for '{query_or_url}': {ex}")
 
@@ -250,7 +250,7 @@ async def extract_audio_info(query_or_url: str, requester: str = "Web User"):
 
             if target_title:
                 search_query = f"scsearch:{target_title} {target_author}".strip()
-                sc_opts = {"format": "bestaudio/best", "quiet": True, "no_warnings": True}
+                sc_opts = {"format": "ba/b/bestaudio/best", "quiet": True, "no_warnings": True}
                 with yt_dlp.YoutubeDL(sc_opts) as sc_ydl:
                     sc_info = sc_ydl.extract_info(search_query, download=False)
                     if sc_info and "entries" in sc_info and sc_info["entries"]:
