@@ -1,7 +1,7 @@
 FROM python:3.11-slim
 
-# Install system FFmpeg audio tools
-RUN apt-get update && apt-get install -y ffmpeg && rm -rf /var/lib/apt/lists/*
+# Install system FFmpeg audio tools and Node.js for YouTube JS signature deciphering
+RUN apt-get update && apt-get install -y ffmpeg nodejs && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 COPY requirements.txt .

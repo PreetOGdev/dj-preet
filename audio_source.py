@@ -156,13 +156,29 @@ def format_duration(seconds):
     return f"{mins:02d}:{secs:02d}"
 
 
+def _get_stream_url(entry: dict) -> str:
+    if not entry:
+        return ""
+    if entry.get("url"):
+        return entry.get("url")
+    if entry.get("requested_formats"):
+        for f in entry["requested_formats"]:
+            if f.get("url"):
+                return f["url"]
+    if entry.get("formats"):
+        for f in reversed(entry["formats"]):
+            if f.get("url"):
+                return f["url"]
+    return ""
+
+
 def _format_track_entry(entry: dict, fallback_query: str, requester: str = "Web User") -> dict:
     video_id = entry.get("id", "")
     title = entry.get("title", "Unknown Title")
     channel = entry.get("uploader") or entry.get("channel") or "Unknown Artist"
     duration = entry.get("duration") or 0
-    webpage_url = entry.get("webpage_url") or entry.get("url") or (f"https://www.youtube.com/watch?v={video_id}" if video_id else "")
-    stream_url = entry.get("url")
+    webpage_url = entry.get("webpage_url") or (f"https://www.youtube.com/watch?v={video_id}" if video_id else "")
+    stream_url = _get_stream_url(entry)
     
     thumbnails = entry.get("thumbnails", [])
     thumbnail = ""
@@ -253,7 +269,7 @@ async def extract_audio_info(query_or_url: str, requester: str = "Web User"):
             info = ytdl.extract_info(query_or_url, download=False)
             if info:
                 entry = info["entries"][0] if "entries" in info and info["entries"] else info
-                if entry and entry.get("url"):
+                if entry and _get_stream_url(entry):
                     res = _format_track_entry(entry, query_or_url, requester)
                     print(f"[AudioSource] Extracted successfully: {res.get('title')}")
                     return res
@@ -292,7 +308,7 @@ async def extract_audio_info(query_or_url: str, requester: str = "Web User"):
                 info = anon_ytdl.extract_info(target, download=False)
                 if info:
                     entry = info["entries"][0] if "entries" in info and info["entries"] else info
-                    if entry and entry.get("url"):
+                    if entry and _get_stream_url(entry):
                         res = _format_track_entry(entry, target, requester)
                         print(f"[AudioSource] Extracted via Android client: {res.get('title')}")
                         return res
@@ -318,7 +334,7 @@ async def extract_audio_info(query_or_url: str, requester: str = "Web User"):
                 info = fb_ytdl.extract_info(target, download=False)
                 if info:
                     entry = info["entries"][0] if "entries" in info and info["entries"] else info
-                    if entry and entry.get("url"):
+                    if entry and _get_stream_url(entry):
                         res = _format_track_entry(entry, target, requester)
                         print(f"[AudioSource] Extracted via TV client: {res.get('title')}")
                         return res
