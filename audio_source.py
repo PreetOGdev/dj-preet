@@ -35,17 +35,45 @@ AUDIO_FILTERS = {
     "karaoke": "-vn -af pan=stereo|c0=c0-c1|c1=c1-c0",
 }
 
-# Optional Cookie file handling (for cloud environments like Render)
+# Cookie file auto-detection (Render Secret Files and Environment Variables)
 cookie_file_path = None
+
+# 1. Check for Render Secret Files at /etc/secrets/
+for secret_cand in ["/etc/secrets/youtube_cookies.txt", "/etc/secrets/cookies.txt"]:
+    if os.path.exists(secret_cand):
+        cookie_file_path = secret_cand
+        break
+
+# 2. Check for YOUTUBE_COOKIES environment variable and auto-repair Netscape format
 raw_cookies = os.getenv("YOUTUBE_COOKIES", "").strip()
-if raw_cookies:
+if not cookie_file_path and raw_cookies:
     try:
         temp_dir = "/tmp" if os.path.exists("/tmp") else os.path.dirname(__file__)
         cookie_file_path = os.path.join(temp_dir, "youtube_cookies.txt")
+        
+        # Ensure Netscape header
+        formatted_cookies = raw_cookies
+        if not formatted_cookies.startswith("# Netscape HTTP Cookie File"):
+            formatted_cookies = "# Netscape HTTP Cookie File\n# http://curl.haxx.se/rfc/cookie_spec.html\n" + formatted_cookies
+        
+        # Ensure proper tab separation for lines
+        lines = []
+        for line in formatted_cookies.splitlines():
+            line_str = line.strip()
+            if not line_str or line_str.startswith("#"):
+                lines.append(line)
+            else:
+                # Convert space-separated tokens to tab-separated Netscape format
+                parts = re.split(r"[ \t]+", line_str)
+                if len(parts) >= 7:
+                    lines.append("\t".join(parts[:7]))
+                else:
+                    lines.append(line)
+        
         with open(cookie_file_path, "w", encoding="utf-8") as f:
-            f.write(raw_cookies)
+            f.write("\n".join(lines) + "\n")
     except Exception as e:
-        print(f"[AudioSource] Failed to write cookie file: {e}")
+        print(f"[AudioSource] Cookie formatting note: {e}")
 
 YTDL_OPTIONS = {
     "format": "ba/b/bestaudio/best",
