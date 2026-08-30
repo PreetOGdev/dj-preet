@@ -465,90 +465,76 @@ async def extract_audio_info(query_or_url: str, requester: str = "Web User"):
 # ─── Autoplay Recommendation ─────────────────────────────────────
 
 async def get_recommended_track(seed_track: dict, exclude_ids: Set[str] = None) -> Optional[dict]:
-    """Find a similar song from the same artist/genre for autoplay continuity."""
+    """Finds a perfectly matching rhythmic song using YouTube's native Radio Mix (RD) algorithm."""
     if not seed_track:
         return None
     if exclude_ids is None:
         exclude_ids = set()
 
-    title = seed_track.get("title", "")
-    channel = seed_track.get("channel", "")
-
-    # Clean noise from title
-    clean_title = re.sub(r"[\(\[].*?[\)\]]", "", title)
-    clean_title = re.sub(
-        r"(?i)\b(official|video|audio|lyrics|hd|4k|remix|slowed|reverb|version|ft|feat|visualizer)\b",
-        "", clean_title
-    ).strip()
-    seed_words = set(w.lower() for w in re.findall(r"\w+", clean_title) if len(w) > 2)
-
-    # Build artist-targeted search queries
-    queries = []
-    if channel and channel != "Unknown Artist":
-        queries.extend([
-            f"{channel} songs official audio",
-            f"{channel} top tracks",
-            f"{channel} {clean_title} audio",
-        ])
-    else:
-        queries.append(f"{clean_title} official audio")
-
-    all_candidates = []
-    for q in queries:
-        try:
-            results = await search_youtube(q, limit=6)
-            if results:
-                all_candidates.extend(results)
-        except Exception:
-            pass
+    seed_id = seed_track.get("id")
+    webpage_url = seed_track.get("webpage_url", "")
+    if not seed_id and "v=" in webpage_url:
+        seed_id = webpage_url.split("v=")[1].split("&")[0]
 
     seen_ids = set(exclude_ids)
-    if seed_track.get("id"):
-        seen_ids.add(str(seed_track["id"]))
+    if seed_id:
+        seen_ids.add(str(seed_id))
 
-    # Blacklist keywords that ruin music flow
-    blacklist = [
-        "jukebox", "full album", "hour", "hours", "podcast",
-        "mashup", "compilation", "all songs", "live stream",
-    ]
+    loop = asyncio.get_running_loop()
 
-    filtered = []
-    for res in all_candidates:
-        res_id = str(res.get("id"))
-        if not res_id or res_id in seen_ids:
+    def _fetch_radio_mix():
+        if not seed_id:
+            return []
+        try:
+            radio_url = f"https://www.youtube.com/watch?v={seed_id}&list=RD{seed_id}"
+            opts = {
+                "extract_flat": "in_playlist",
+                "skip_download": True,
+                "quiet": True,
+                "no_warnings": True,
+                "logger": _YTDLLogger(),
+                "playlistend": 12,
+            }
+            with yt_dlp.YoutubeDL(opts) as ydl:
+                info = ydl.extract_info(radio_url, download=False)
+                if info:
+                    return info.get("entries", [])
+        except Exception as e:
+            logger.warning(f"[Autoplay] Radio mix fetch note: {e}")
+        return []
+
+    entries = await loop.run_in_executor(None, _fetch_radio_mix)
+
+    blacklist = ["jukebox", "full album", "1 hour", "10 hours", "podcast", "mashup", "compilation"]
+
+    for entry in entries:
+        if not entry:
+            continue
+        cand_id = str(entry.get("id"))
+        if not cand_id or cand_id in seen_ids:
             continue
 
-        duration = res.get("duration", 0)
-        if duration and (duration < 60 or duration > 450):
+        cand_title = entry.get("title", "").lower()
+        if any(bad in cand_title for bad in blacklist):
             continue
 
-        res_title = res.get("title", "").lower()
-        if any(bad in res_title for bad in blacklist):
+        duration = entry.get("duration", 0)
+        if duration and (duration < 50 or duration > 480):
             continue
 
-        # Skip near-duplicate titles
-        res_clean = re.sub(r"[\(\[].*?[\)\]]", "", res_title)
-        res_clean = re.sub(
-            r"(?i)\b(official|video|audio|lyrics|hd|4k|remix|slowed|reverb|version|ft|feat|visualizer)\b",
-            "", res_clean
-        ).strip()
-        res_words = set(w.lower() for w in re.findall(r"\w+", res_clean) if len(w) > 2)
-
-        if seed_words and len(seed_words.intersection(res_words)) >= max(1, len(seed_words) - 1):
-            continue
-
-        seen_ids.add(res_id)
-        filtered.append(res)
-
-    if filtered:
-        choice_pool = filtered[:3]
-        selected = random.choice(choice_pool)
-        track_info = await extract_audio_info(
-            selected.get("url") or selected.get("title"),
-            requester="Autoplay ✦",
-        )
+        cand_url = f"https://www.youtube.com/watch?v={cand_id}"
+        track_info = await extract_audio_info(cand_url, requester="Autoplay ✦")
         if track_info:
             return track_info
+
+    # Fallback to artist search if radio mix had no fresh candidates
+    channel = seed_track.get("channel", "")
+    if channel and channel != "Unknown Artist":
+        candidates = await search_youtube(f"{channel} official audio", limit=5)
+        for cand in candidates:
+            cand_id = str(cand.get("id"))
+            if cand_id and cand_id not in seen_ids:
+                return await extract_audio_info(cand.get("url"), requester="Autoplay ✦")
 
     return None
 

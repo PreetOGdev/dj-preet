@@ -238,6 +238,8 @@ class GuildMusicPlayer:
             self.loop_mode = "off"
         self._save_settings_to_db()
         self.notify_state_changed()
+        if self.autoplay_enabled and len(self.queue) == 0 and self.current_track:
+            asyncio.create_task(self._prefetch_next_autoplay_track())
 
     def set_volume(self, volume_percent: int):
         self.volume = max(0.0, min(2.0, volume_percent / 100.0))
@@ -466,12 +468,38 @@ class GuildMusicPlayer:
             self._save_settings_to_db()
             self.notify_state_changed()
 
+            # Seamless Autoplay: Pre-fetch next track in background while current plays
+            if self.autoplay_enabled and len(self.queue) == 0:
+                asyncio.create_task(self._prefetch_next_autoplay_track())
+
         except Exception as e:
             print(f"[Player Error] Failed to play track '{track.title}': {e}")
             self.is_loading = False
             self.notify_state_changed()
             if self.queue or self.autoplay_enabled:
                 await self.play_next()
+
+    async def _prefetch_next_autoplay_track(self):
+        """Pre-fetches the next autoplay song in background while current track plays, guaranteeing 0s transition lag."""
+        if not self.autoplay_enabled or len(self.queue) > 0 or not self.current_track:
+            return
+        try:
+            exclude_ids = {t.id for t in self.history}
+            if self.current_track.id:
+                exclude_ids.add(self.current_track.id)
+            for q in self.queue:
+                if q.id:
+                    exclude_ids.add(q.id)
+
+            rec_info = await get_recommended_track(self.current_track.to_dict(), exclude_ids=exclude_ids)
+            if rec_info and len(self.queue) == 0 and self.autoplay_enabled:
+                prefetched_track = Track(rec_info)
+                self.queue.append(prefetched_track)
+                self._save_queue_to_db()
+                self.notify_state_changed()
+                print(f"[Autoplay] Pre-fetched next track in background: {prefetched_track.title}")
+        except Exception as e:
+            print(f"[Autoplay] Pre-fetch note: {e}")
 
     async def _handle_track_ended(self):
         await self.play_next()
