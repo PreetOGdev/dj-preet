@@ -1,0 +1,13 @@
+services:
+  - type: web
+    name: dj-preet
+    runtime: docker
+    plan: free
+    region: oregon
+    envVars:
+      - key: DISCORD_TOKEN
+        sync: false
+      - key: PORT
+        value: 8000
+      - key: HOST
+        value: 0.0.0.0

@@ -1,0 +1,775 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>DJ-Preet - Discord Music Player</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700;800&family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+  <!-- Lucide Icons -->
+  <script src="https://unpkg.com/lucide@latest"></script>
+  <link rel="stylesheet" href="/css/style.css">
+</head>
+<body class="dark-theme">
+  <!-- Main Application Wrapper -->
+  <div class="app-layout">
+    
+    <!-- Top Global Header -->
+    <header class="top-navbar">
+      <div class="nav-left">
+        <div class="brand-logo" id="brandLogo" title="DJ-Preet Dashboard">
+          <div class="logo-icon">
+            <i data-lucide="music-2"></i>
+          </div>
+          <div class="brand-text-group">
+            <span class="logo-text">DJ-Preet<span class="logo-star">✦</span></span>
+            <span class="logo-subtext">Discord Music Engine</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Universal Search Center -->
+      <div class="nav-center-search">
+        <div class="global-search-container">
+          <div class="search-input-wrapper">
+            <i data-lucide="search" class="search-icon"></i>
+            <input type="text" id="globalSearchInput" placeholder="Search songs, artists, or paste YouTube link..." autocomplete="off" spellcheck="false">
+            <kbd class="search-shortcut-key" title="Press / to search">/</kbd>
+            <button class="search-clear-btn" id="searchClearBtn" style="display: none;" title="Clear search">
+              <i data-lucide="x"></i>
+            </button>
+          </div>
+
+          <!-- YouTube Live Search Dropdown -->
+          <div class="search-results-dropdown" id="searchResultsDropdown" style="display: none;">
+            <div class="dropdown-header">
+              <span><i data-lucide="youtube" class="yt-icon"></i> YouTube Search Results</span>
+              <span class="search-spinner" id="searchSpinner" style="display: none;">
+                <i data-lucide="loader-2" class="spin-icon"></i> Searching...
+              </span>
+            </div>
+            <div class="search-results-list" id="searchResultsList">
+              <!-- Dynamically populated -->
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Top Right Status & Controls -->
+      <div class="nav-right">
+        <!-- Voice Channel Status Pill -->
+        <button class="voice-status-pill" id="voiceConnectBtn" title="Click to Connect or Switch Voice Channel">
+          <span class="status-dot disconnected" id="botStatusDot"></span>
+          <span class="voice-channel-label" id="voiceChannelLabel">Not in Voice</span>
+          <i data-lucide="chevron-down" class="pill-arrow"></i>
+        </button>
+
+        <!-- Latency / Ping Pill -->
+        <div class="ping-badge" id="pingBadge" title="Discord Gateway Latency">
+          <span class="ping-dot"></span>
+          <span id="pingValue">-- ms</span>
+        </div>
+
+        <!-- Bot Settings Button -->
+        <button class="icon-circle-btn" id="openSettingsBtn" title="Bot Configuration & Token">
+          <i data-lucide="settings"></i>
+        </button>
+      </div>
+    </header>
+
+    <!-- Main Workspace (Sidebar + Dynamic Viewport) -->
+    <div class="main-body-container">
+      
+      <!-- Left Sidebar Navigation -->
+      <aside class="sidebar-panel">
+        <div class="sidebar-nav-group">
+          <span class="sidebar-group-title">NAVIGATION</span>
+          <ul class="sidebar-nav">
+            <li class="active" data-tab="queue" id="sidebarTabQueue">
+              <a href="#queue">
+                <i data-lucide="list-music"></i>
+                <span>Queue</span>
+              </a>
+              <span class="tab-count-badge" id="sidebarQueueCount">0</span>
+            </li>
+            <li data-tab="playlists" id="sidebarTabPlaylists">
+              <a href="#playlists">
+                <i data-lucide="library"></i>
+                <span>Playlists</span>
+              </a>
+              <span class="tab-count-badge" id="sidebarPlaylistCount">5</span>
+            </li>
+            <li data-tab="history" id="sidebarTabHistory">
+              <a href="#history">
+                <i data-lucide="history"></i>
+                <span>History</span>
+              </a>
+              <span class="tab-count-badge" id="sidebarHistoryCount">0</span>
+            </li>
+            <li data-tab="audioFx" id="sidebarTabAudioFx">
+              <a href="#audio-fx">
+                <i data-lucide="sliders"></i>
+                <span>Audio FX</span>
+              </a>
+              <span class="fx-active-badge" id="sidebarFxBadge" style="display: none;">ON</span>
+            </li>
+            <li data-tab="commands" id="sidebarTabCommands">
+              <a href="#commands">
+                <i data-lucide="terminal"></i>
+                <span>Commands</span>
+              </a>
+            </li>
+          </ul>
+        </div>
+
+        <!-- Sidebar Quick Voice Card -->
+        <div class="sidebar-voice-card" id="sidebarVoiceCard">
+          <div class="voice-card-header">
+            <div class="voice-card-dot" id="sidebarVoiceDot"></div>
+            <span class="voice-card-title" id="sidebarVoiceTitle">Voice Channel</span>
+          </div>
+          <p class="voice-card-desc" id="sidebarVoiceDesc">Connect DJ-Preet to play music in your server.</p>
+          <button class="voice-card-action-btn" id="sidebarVoiceActionBtn">
+            <i data-lucide="phone-call"></i> <span>Connect Voice</span>
+          </button>
+        </div>
+
+        <!-- Sidebar Footer Status -->
+        <div class="sidebar-footer">
+          <div class="bot-info-row">
+            <div class="bot-status-avatar">
+              <i data-lucide="bot"></i>
+            </div>
+            <div class="bot-info-text">
+              <span class="bot-name" id="sidebarBotName">DJ-Preet</span>
+              <span class="bot-status-text" id="sidebarBotStatus">Ready</span>
+            </div>
+          </div>
+        </div>
+      </aside>
+
+      <!-- Main Content Viewport -->
+      <main class="content-viewport">
+
+        <!-- ================= VIEW 1: QUEUE ================= -->
+        <section class="tab-content active" id="queueTab">
+          
+          <!-- Now Playing Hero Banner -->
+          <div class="now-playing-hero" id="nowPlayingHero">
+            <div class="hero-artwork-container">
+              <img src="https://images.unsplash.com/photo-1614613535308-eb5fbd3d2c17?w=300&auto=format&fit=crop&q=80" alt="Cover" class="hero-artwork" id="heroArtwork">
+              <div class="hero-eq-bars" id="heroEqBars" style="display: none;">
+                <span></span><span></span><span></span><span></span><span></span>
+              </div>
+            </div>
+            <div class="hero-info-container">
+              <div class="hero-badge-row">
+                <span class="hero-live-badge" id="heroStatusBadge"><i data-lucide="disc"></i> NOW PLAYING</span>
+                <span class="hero-filter-badge" id="heroFilterBadge" style="display: none;">NORMAL</span>
+              </div>
+              <h2 class="hero-track-title" id="heroTrackTitle">No Song Playing</h2>
+              <div class="hero-meta-row">
+                <span class="hero-track-artist" id="heroTrackArtist">Search a song above or load a playlist to start!</span>
+                <span class="hero-meta-sep">•</span>
+                <span class="hero-track-requester" id="heroTrackRequester"><i data-lucide="user"></i> Web Dashboard</span>
+              </div>
+              <!-- Hero Progress Bar -->
+              <div class="hero-progress-wrapper">
+                <div class="hero-time-stamp" id="heroCurrentTime">00:00</div>
+                <div class="hero-progress-bar-bg" id="heroProgressContainer">
+                  <div class="hero-progress-fill" id="heroProgressFill" style="width: 0%;"></div>
+                </div>
+                <div class="hero-time-stamp" id="heroTotalDuration">00:00</div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Queue Header & Action Bar -->
+          <div class="queue-toolbar">
+            <div class="queue-title-group">
+              <h3 class="queue-section-heading">Up Next in Queue</h3>
+              <span class="track-counter-chip" id="queueTracksBadge">0 tracks • 00:00</span>
+            </div>
+
+            <div class="queue-action-buttons">
+              <button class="tool-btn" id="autoplayToggleBtn" title="Auto-play similar tracks when queue finishes">
+                <i data-lucide="sparkles"></i> <span>Autoplay</span>
+                <span class="toggle-pill" id="autoplayPill">OFF</span>
+              </button>
+              <button class="tool-btn" id="shuffleQueueBtn" title="Randomize queue order">
+                <i data-lucide="shuffle"></i> <span>Shuffle</span>
+              </button>
+              <button class="tool-btn" id="saveToPlaylistBtn" title="Save current song or queue to a playlist">
+                <i data-lucide="folder-plus"></i> <span>Save to Playlist</span>
+              </button>
+              <button class="tool-btn" id="clearQueueBtn" title="Remove all tracks from queue">
+                <i data-lucide="trash-2"></i> <span>Clear</span>
+              </button>
+              <button class="tool-btn danger" id="stopDisconnectBtn" title="Stop music and leave voice channel">
+                <i data-lucide="square"></i> <span>Stop & Leave</span>
+              </button>
+            </div>
+          </div>
+
+          <!-- Queue Track List -->
+          <div class="queue-list-container">
+            <div class="queue-list" id="queueItemsList">
+              <!-- Dynamically populated queue items -->
+            </div>
+          </div>
+        </section>
+
+        <!-- ================= VIEW 2: PLAYLISTS ================= -->
+        <section class="tab-content" id="playlistsTab" style="display: none;">
+          <div class="view-header-row">
+            <div>
+              <h2 class="view-title">Music Playlists</h2>
+              <p class="view-subtitle">Create your custom collections or queue curated genre presets.</p>
+            </div>
+            <button class="btn-primary" id="createPlaylistBtn">
+              <i data-lucide="plus"></i> <span>Create Playlist</span>
+            </button>
+          </div>
+
+          <!-- Custom User Playlists Section -->
+          <div class="playlists-group-section">
+            <h3 class="playlists-group-heading"><i data-lucide="folder-heart"></i> My Custom Playlists</h3>
+            <div class="custom-playlists-grid" id="customPlaylistsGrid">
+              <!-- Populated via JS -->
+            </div>
+          </div>
+
+          <!-- Curated Genre Presets Section -->
+          <div class="playlists-group-section">
+            <h3 class="playlists-group-heading"><i data-lucide="sparkles"></i> Curated Genre Presets</h3>
+            <div class="preset-playlists-grid">
+              <div class="preset-card lofi-theme" data-preset="lofi">
+                <div class="preset-icon-wrap"><i data-lucide="coffee"></i></div>
+                <div class="preset-content">
+                  <h4>Lofi Chill & Study</h4>
+                  <p>Smooth relaxing lo-fi hip hop beats</p>
+                  <div class="preset-meta"><span>5 Tracks</span> • <span>Relaxing</span></div>
+                </div>
+                <button class="preset-load-btn" title="Add to Queue"><i data-lucide="play"></i> Queue All</button>
+              </div>
+
+              <div class="preset-card synthwave-theme" data-preset="synthwave">
+                <div class="preset-icon-wrap"><i data-lucide="sunset"></i></div>
+                <div class="preset-content">
+                  <h4>Synthwave & Retrowave</h4>
+                  <p>Cyberpunk 80s neon electronic drive</p>
+                  <div class="preset-meta"><span>5 Tracks</span> • <span>Electronic</span></div>
+                </div>
+                <button class="preset-load-btn" title="Add to Queue"><i data-lucide="play"></i> Queue All</button>
+              </div>
+
+              <div class="preset-card bass-theme" data-preset="bass">
+                <div class="preset-icon-wrap"><i data-lucide="zap"></i></div>
+                <div class="preset-content">
+                  <h4>Bass Boost Workout</h4>
+                  <p>High energy trap, dubstep & phonk</p>
+                  <div class="preset-meta"><span>5 Tracks</span> • <span>High Energy</span></div>
+                </div>
+                <button class="preset-load-btn" title="Add to Queue"><i data-lucide="play"></i> Queue All</button>
+              </div>
+
+              <div class="preset-card hits-theme" data-preset="hits">
+                <div class="preset-icon-wrap"><i data-lucide="flame"></i></div>
+                <div class="preset-content">
+                  <h4>Global Top Chart Hits</h4>
+                  <p>Most popular charting songs right now</p>
+                  <div class="preset-meta"><span>5 Tracks</span> • <span>Popular</span></div>
+                </div>
+                <button class="preset-load-btn" title="Add to Queue"><i data-lucide="play"></i> Queue All</button>
+              </div>
+
+              <div class="preset-card acoustic-theme" data-preset="acoustic">
+                <div class="preset-icon-wrap"><i data-lucide="feather"></i></div>
+                <div class="preset-content">
+                  <h4>Acoustic & Coffeehouse</h4>
+                  <p>Calm guitar, piano & acoustic melodies</p>
+                  <div class="preset-meta"><span>5 Tracks</span> • <span>Acoustic</span></div>
+                </div>
+                <button class="preset-load-btn" title="Add to Queue"><i data-lucide="play"></i> Queue All</button>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- ================= VIEW 3: HISTORY ================= -->
+        <section class="tab-content" id="historyTab" style="display: none;">
+          <div class="view-header-row">
+            <div>
+              <h2 class="view-title">Playback History</h2>
+              <p class="view-subtitle">Recently played tracks in your voice session.</p>
+            </div>
+            <button class="tool-btn" id="clearHistoryBtn">
+              <i data-lucide="trash-2"></i> <span>Clear History</span>
+            </button>
+          </div>
+
+          <div class="history-list-container">
+            <div class="history-list" id="historyItemsList">
+              <!-- Populated via JS -->
+            </div>
+          </div>
+        </section>
+
+        <!-- ================= VIEW 4: AUDIO FX ================= -->
+        <section class="tab-content" id="audioFxTab" style="display: none;">
+          <div class="view-header-row">
+            <div>
+              <h2 class="view-title">DSP Audio Equalizer & FX</h2>
+              <p class="view-subtitle">Real-time FFmpeg DSP audio filters streamed directly to Discord voice.</p>
+            </div>
+            <div class="fx-active-indicator" id="fxActiveIndicator">
+              <span>Active Effect:</span>
+              <strong id="activeFilterName">Normal / Flat</strong>
+            </div>
+          </div>
+
+          <div class="eq-preset-grid-large">
+            <div class="fx-card active" data-filter="none">
+              <div class="fx-card-header">
+                <div class="fx-icon"><i data-lucide="volume-2"></i></div>
+                <span class="fx-status-tag">ACTIVE</span>
+              </div>
+              <h4>Normal / Studio Flat</h4>
+              <p>Pure studio master audio with zero alteration or filtering.</p>
+              <button class="fx-apply-btn">Apply Normal</button>
+            </div>
+
+            <div class="fx-card" data-filter="bassboost">
+              <div class="fx-card-header">
+                <div class="fx-icon"><i data-lucide="speaker"></i></div>
+                <span class="fx-status-tag">DSP</span>
+              </div>
+              <h4>Bass Boost 🔊</h4>
+              <p>+10dB punchy low-end subwoofer enhancement.</p>
+              <button class="fx-apply-btn">Apply Bass Boost</button>
+            </div>
+
+            <div class="fx-card" data-filter="superbass">
+              <div class="fx-card-header">
+                <div class="fx-icon"><i data-lucide="zap"></i></div>
+                <span class="fx-status-tag">DSP</span>
+              </div>
+              <h4>Super Bass 💥</h4>
+              <p>+16dB heavy bass overload for trap, dubstep & phonk.</p>
+              <button class="fx-apply-btn">Apply Super Bass</button>
+            </div>
+
+            <div class="fx-card" data-filter="nightcore">
+              <div class="fx-card-header">
+                <div class="fx-icon"><i data-lucide="moon"></i></div>
+                <span class="fx-status-tag">DSP</span>
+              </div>
+              <h4>Nightcore 🌙</h4>
+              <p>Pitch-shifted vocals with 1.25x speed boost.</p>
+              <button class="fx-apply-btn">Apply Nightcore</button>
+            </div>
+
+            <div class="fx-card" data-filter="vaporwave">
+              <div class="fx-card-header">
+                <div class="fx-icon"><i data-lucide="cassette-tape"></i></div>
+                <span class="fx-status-tag">DSP</span>
+              </div>
+              <h4>Vaporwave 📼</h4>
+              <p>Slowed 0.85x playback with warm vintage reverb.</p>
+              <button class="fx-apply-btn">Apply Vaporwave</button>
+            </div>
+
+            <div class="fx-card" data-filter="8d">
+              <div class="fx-card-header">
+                <div class="fx-icon"><i data-lucide="headphones"></i></div>
+                <span class="fx-status-tag">DSP</span>
+              </div>
+              <h4>8D Audio Surround 🎧</h4>
+              <p>Dynamic 360-degree binaural panning across headphones.</p>
+              <button class="fx-apply-btn">Apply 8D Surround</button>
+            </div>
+
+            <div class="fx-card" data-filter="treble">
+              <div class="fx-card-header">
+                <div class="fx-icon"><i data-lucide="sparkles"></i></div>
+                <span class="fx-status-tag">DSP</span>
+              </div>
+              <h4>Treble Boost ✨</h4>
+              <p>Crisp acoustic highs, vocal clarity, and shimmer.</p>
+              <button class="fx-apply-btn">Apply Treble</button>
+            </div>
+
+            <div class="fx-card" data-filter="karaoke">
+              <div class="fx-card-header">
+                <div class="fx-icon"><i data-lucide="mic"></i></div>
+                <span class="fx-status-tag">DSP</span>
+              </div>
+              <h4>Karaoke Vocal Reducer 🎤</h4>
+              <p>Attenuates center-panned vocals for sing-along mode.</p>
+              <button class="fx-apply-btn">Apply Karaoke</button>
+            </div>
+          </div>
+        </section>
+
+        <!-- ================= VIEW 5: COMMANDS ================= -->
+        <section class="tab-content" id="commandsTab" style="display: none;">
+          <div class="view-header-row">
+            <div>
+              <h2 class="view-title">Discord Bot Commands</h2>
+              <p class="view-subtitle">Interactive cheatsheet for all slash and prefix commands. Click any command to copy.</p>
+            </div>
+            <div class="commands-prefix-badge">
+              <span>Default Prefix:</span> <code>!</code>
+            </div>
+          </div>
+
+          <div class="commands-grid">
+            <div class="command-card" data-copy="/play">
+              <div class="cmd-top">
+                <span class="cmd-slash">/play &lt;query or url&gt;</span>
+                <span class="cmd-alias">!play</span>
+              </div>
+              <p class="cmd-desc">Search YouTube or paste a URL to play audio in your voice channel.</p>
+              <button class="cmd-copy-btn"><i data-lucide="copy"></i> Copy</button>
+            </div>
+
+            <div class="command-card" data-copy="/skip">
+              <div class="cmd-top">
+                <span class="cmd-slash">/skip</span>
+                <span class="cmd-alias">!skip</span>
+              </div>
+              <p class="cmd-desc">Skip the currently playing track and advance to the next song in queue.</p>
+              <button class="cmd-copy-btn"><i data-lucide="copy"></i> Copy</button>
+            </div>
+
+            <div class="command-card" data-copy="/pause">
+              <div class="cmd-top">
+                <span class="cmd-slash">/pause</span>
+                <span class="cmd-alias">!pause</span>
+              </div>
+              <p class="cmd-desc">Pause voice channel audio playback.</p>
+              <button class="cmd-copy-btn"><i data-lucide="copy"></i> Copy</button>
+            </div>
+
+            <div class="command-card" data-copy="/resume">
+              <div class="cmd-top">
+                <span class="cmd-slash">/resume</span>
+                <span class="cmd-alias">!resume</span>
+              </div>
+              <p class="cmd-desc">Resume paused music playback in voice channel.</p>
+              <button class="cmd-copy-btn"><i data-lucide="copy"></i> Copy</button>
+            </div>
+
+            <div class="command-card" data-copy="/queue">
+              <div class="cmd-top">
+                <span class="cmd-slash">/queue</span>
+                <span class="cmd-alias">!queue</span>
+              </div>
+              <p class="cmd-desc">Display upcoming tracks in the current server queue.</p>
+              <button class="cmd-copy-btn"><i data-lucide="copy"></i> Copy</button>
+            </div>
+
+            <div class="command-card" data-copy="/volume">
+              <div class="cmd-top">
+                <span class="cmd-slash">/volume &lt;1-100&gt;</span>
+                <span class="cmd-alias">!volume</span>
+              </div>
+              <p class="cmd-desc">Adjust playback volume level in Discord voice.</p>
+              <button class="cmd-copy-btn"><i data-lucide="copy"></i> Copy</button>
+            </div>
+
+            <div class="command-card" data-copy="/stop">
+              <div class="cmd-top">
+                <span class="cmd-slash">/stop</span>
+                <span class="cmd-alias">!stop</span>
+              </div>
+              <p class="cmd-desc">Stop music, clear the queue, and disconnect bot from voice.</p>
+              <button class="cmd-copy-btn"><i data-lucide="copy"></i> Copy</button>
+            </div>
+
+            <div class="command-card" data-copy="/panel">
+              <div class="cmd-top">
+                <span class="cmd-slash">/panel</span>
+                <span class="cmd-alias">!panel</span>
+              </div>
+              <p class="cmd-desc">Get the instant URL link to open this Web Dashboard.</p>
+              <button class="cmd-copy-btn"><i data-lucide="copy"></i> Copy</button>
+            </div>
+          </div>
+        </section>
+
+      </main>
+    </div>
+
+    <!-- Persistent Bottom Player Bar -->
+    <footer class="bottom-player-bar">
+      
+      <!-- Current Track Info (Left) -->
+      <div class="player-track-info">
+        <div class="track-artwork-wrapper">
+          <img src="https://images.unsplash.com/photo-1614613535308-eb5fbd3d2c17?w=120&auto=format&fit=crop&q=80" alt="Thumbnail" id="currentTrackThumb" class="track-thumbnail">
+          <div class="track-mini-wave" id="trackWaveAnim" style="display: none;">
+            <span></span><span></span><span></span>
+          </div>
+        </div>
+        <div class="track-text-meta">
+          <div class="track-title-row">
+            <span class="current-title" id="currentTrackTitle">No Song Playing</span>
+          </div>
+          <div class="track-artist-row">
+            <span class="current-artist" id="currentTrackArtist">DJ-Preet Discord Player</span>
+          </div>
+          <div class="track-requester-row">
+            <span class="requester-chip" id="currentTrackRequesterChip">
+              <i data-lucide="user"></i> <span id="currentTrackRequester">Web Dashboard</span>
+            </span>
+          </div>
+        </div>
+        <button class="mini-fav-btn" id="addToPlaylistModalBtn" title="Save current song to playlist">
+          <i data-lucide="heart"></i>
+        </button>
+      </div>
+
+      <!-- Playback Controls & Progress Scrubber (Center) -->
+      <div class="player-controls-center">
+        <div class="control-buttons-row">
+          <button class="control-btn" id="shuffleBtn" title="Shuffle Queue">
+            <i data-lucide="shuffle"></i>
+          </button>
+          <button class="control-btn" id="prevBtn" title="Previous Song">
+            <i data-lucide="skip-back"></i>
+          </button>
+          <button class="play-pause-btn" id="playPauseBtn" title="Play / Pause">
+            <i data-lucide="play" id="playPauseIcon"></i>
+          </button>
+          <button class="control-btn" id="nextBtn" title="Next Song">
+            <i data-lucide="skip-forward"></i>
+          </button>
+          <button class="control-btn" id="loopBtn" title="Loop Mode: Off">
+            <i data-lucide="repeat" id="loopIcon"></i>
+          </button>
+          <button class="control-btn" id="bottomAutoplayBtn" title="Autoplay: Off">
+            <i data-lucide="sparkles" id="bottomAutoplayIcon"></i>
+          </button>
+        </div>
+
+        <div class="progress-bar-row">
+          <span class="time-stamp" id="currentTimeStamp">00:00</span>
+          <div class="seek-slider-container" id="seekSliderContainer">
+            <div class="seek-slider-track">
+              <div class="seek-slider-fill" id="seekSliderFill" style="width: 0%;"></div>
+              <div class="seek-slider-handle" id="seekSliderHandle" style="left: 0%;"></div>
+            </div>
+            <input type="range" id="seekRangeInput" min="0" max="100" value="0" step="0.1" class="seek-range-hidden">
+          </div>
+          <span class="time-stamp" id="totalDurationStamp">00:00</span>
+        </div>
+      </div>
+
+      <!-- Right Utility Controls -->
+      <div class="player-tools-right">
+        <!-- Equalizer Button -->
+        <button class="tool-icon-btn" id="eqQuickBtn" title="Audio Equalizer & FX">
+          <i data-lucide="sliders"></i>
+          <span class="filter-indicator-dot" id="filterDot" style="display: none;"></span>
+        </button>
+
+        <!-- Volume Control -->
+        <div class="volume-slider-group">
+          <button class="volume-btn" id="volumeMuteBtn" title="Mute / Unmute">
+            <i data-lucide="volume-2" id="volumeIcon"></i>
+          </button>
+          <div class="volume-slider-wrap">
+            <input type="range" id="volumeRange" min="0" max="100" value="80" class="volume-range" title="Volume">
+          </div>
+          <span class="volume-percent" id="volumePercent">80%</span>
+        </div>
+      </div>
+    </footer>
+
+  </div>
+
+  <!-- ================= MODALS ================= -->
+
+  <!-- Modal: Voice Channel / Guild Selector -->
+  <div class="modal-overlay" id="voiceModal" style="display: none;">
+    <div class="modal-card">
+      <div class="modal-header">
+        <h3><i data-lucide="radio"></i> Connect Bot to Voice Channel</h3>
+        <button class="modal-close-btn" data-close="voiceModal"><i data-lucide="x"></i></button>
+      </div>
+      <div class="modal-body">
+        <p class="modal-description">Select your Discord server and the voice channel you want DJ-Preet to join:</p>
+        
+        <div class="form-group">
+          <label><i data-lucide="server"></i> Select Server (Guild)</label>
+          <select id="guildSelectDropdown" class="form-select">
+            <option value="">Loading servers...</option>
+          </select>
+        </div>
+
+        <div class="form-group">
+          <label><i data-lucide="volume-2"></i> Select Voice Channel</label>
+          <select id="voiceChannelSelectDropdown" class="form-select">
+            <option value="">Select a server first</option>
+          </select>
+        </div>
+
+        <div class="channel-status-box" id="channelStatusBox">
+          <span id="channelStatusText">Bot is currently disconnected</span>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn-secondary" id="leaveVoiceModalBtn"><i data-lucide="phone-off"></i> Disconnect</button>
+        <button class="btn-primary" id="joinVoiceModalBtn"><i data-lucide="phone-call"></i> Connect Voice</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal: Bot Settings & Token -->
+  <div class="modal-overlay" id="settingsModal" style="display: none;">
+    <div class="modal-card">
+      <div class="modal-header">
+        <h3><i data-lucide="settings"></i> Bot Configuration & Token</h3>
+        <button class="modal-close-btn" data-close="settingsModal"><i data-lucide="x"></i></button>
+      </div>
+      <div class="modal-body">
+        <div class="settings-guide-card">
+          <h4><i data-lucide="info"></i> Quick Discord Bot Setup</h4>
+          <ol>
+            <li>Go to <a href="https://discord.com/developers/applications" target="_blank" rel="noopener">Discord Developer Portal</a></li>
+            <li>Create an Application &gt; Click <strong>Bot</strong> tab &gt; Reset/Copy <strong>Token</strong></li>
+            <li>Enable <strong>Message Content Intent</strong> & <strong>Server Members Intent</strong></li>
+            <li>Use the <strong>OAuth2 &gt; URL Generator</strong> with scopes: <code>bot</code>, <code>applications.commands</code> and voice permissions (Connect, Speak).</li>
+          </ol>
+        </div>
+
+        <div class="channel-status-box" id="tokenStatusBox" style="margin-bottom: 16px;">
+          <span id="tokenStatusText"><i data-lucide="check-circle"></i> Token is loaded from environment (.env)</span>
+        </div>
+
+        <div class="form-group">
+          <label><i data-lucide="key"></i> Discord Bot Token</label>
+          <div class="input-with-toggle">
+            <input type="password" id="botTokenInput" class="form-input" placeholder="Paste your bot token here...">
+            <button class="toggle-visibility-btn" id="toggleTokenVisibility" type="button" title="Show / Hide Token"><i data-lucide="eye"></i></button>
+          </div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn-secondary" data-close="settingsModal">Cancel</button>
+        <button class="btn-primary" id="saveTokenBtn"><i data-lucide="save"></i> Save Configuration</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal: Create Custom Playlist -->
+  <div class="modal-overlay" id="createPlaylistModal" style="display: none;">
+    <div class="modal-card">
+      <div class="modal-header">
+        <h3><i data-lucide="folder-plus"></i> Create New Playlist</h3>
+        <button class="modal-close-btn" data-close="createPlaylistModal"><i data-lucide="x"></i></button>
+      </div>
+      <div class="modal-body">
+        <div class="form-group">
+          <label>Playlist Name</label>
+          <input type="text" id="newPlaylistNameInput" class="form-input" placeholder="e.g. My Gym Bangers" maxlength="40">
+        </div>
+        <div class="form-group">
+          <label>Description (Optional)</label>
+          <input type="text" id="newPlaylistDescInput" class="form-input" placeholder="e.g. High tempo tracks for workout" maxlength="80">
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn-secondary" data-close="createPlaylistModal">Cancel</button>
+        <button class="btn-primary" id="confirmCreatePlaylistBtn"><i data-lucide="plus"></i> Create</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal: Save to Playlist (Current Track or Queue) -->
+  <div class="modal-overlay" id="saveToPlaylistModal" style="display: none;">
+    <div class="modal-card">
+      <div class="modal-header">
+        <div class="modal-header-titles">
+          <h3><i data-lucide="folder-plus"></i> Save to Playlist</h3>
+          <span class="modal-subtitle" id="saveToPlaylistTargetInfo">Save track or queue to your collection</span>
+        </div>
+        <button class="modal-close-btn" data-close="saveToPlaylistModal"><i data-lucide="x"></i></button>
+      </div>
+      <div class="modal-body">
+        <!-- Target Toggle: Current Song vs Entire Queue -->
+        <div class="playlist-save-target-tabs">
+          <button type="button" class="target-tab active" id="saveTargetCurrentBtn">
+            <i data-lucide="music"></i> Current Song
+          </button>
+          <button type="button" class="target-tab" id="saveTargetQueueBtn">
+            <i data-lucide="list-music"></i> Entire Queue (<span id="saveQueueCountBadge">0</span>)
+          </button>
+        </div>
+
+        <div class="target-track-preview-box" id="targetTrackPreview">
+          <span class="preview-label">Selected Item</span>
+          <span class="preview-track-title" id="savePreviewTitle">No song playing</span>
+        </div>
+
+        <div class="form-group" style="margin-top: 10px;">
+          <label><i data-lucide="folder"></i> Add to Existing Playlist</label>
+          <div class="playlist-select-list" id="playlistSelectList">
+            <!-- Populated via JS -->
+          </div>
+        </div>
+
+        <div class="form-divider-text"><span>OR CREATE NEW PLAYLIST</span></div>
+
+        <div class="form-group">
+          <label><i data-lucide="plus-circle"></i> New Playlist Name</label>
+          <div class="input-with-button">
+            <input type="text" id="quickNewPlaylistName" class="form-input" placeholder="e.g. Late Night Chill" maxlength="40">
+            <button type="button" class="btn-primary" id="saveToNewPlaylistBtn">
+              <i data-lucide="plus"></i> Save & Create
+            </button>
+          </div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn-secondary" data-close="saveToPlaylistModal">Close</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal: View Playlist Details -->
+  <div class="modal-overlay" id="viewPlaylistModal" style="display: none;">
+    <div class="modal-card modal-large">
+      <div class="modal-header">
+        <div>
+          <h3 id="viewPlaylistTitle">Playlist Details</h3>
+          <span class="modal-subtitle" id="viewPlaylistSubtitle">0 tracks</span>
+        </div>
+        <button class="modal-close-btn" data-close="viewPlaylistModal"><i data-lucide="x"></i></button>
+      </div>
+      <div class="modal-body">
+        <div class="view-playlist-actions">
+          <button class="btn-primary" id="playEntirePlaylistBtn"><i data-lucide="play"></i> Queue All Tracks</button>
+          <button class="btn-secondary danger" id="deletePlaylistBtn"><i data-lucide="trash-2"></i> Delete Playlist</button>
+        </div>
+        <div class="view-playlist-tracks" id="viewPlaylistTracksList">
+          <!-- Tracks populated via JS -->
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Toast Notification Container -->
+  <div class="toast-container" id="toastContainer"></div>
+
+  <!-- App Script -->
+  <script src="/js/app.js"></script>
+  <script>
+    document.addEventListener("DOMContentLoaded", () => {
+      lucide.createIcons();
+    });
+  </script>
+</body>
+</html>
