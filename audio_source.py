@@ -130,7 +130,7 @@ if cookie_file_path and os.path.exists(cookie_file_path):
 
 SEARCH_OPTIONS = {
     "format": "ba/b/bestaudio/best",
-    "extract_flat": True,
+    "extract_flat": "in_playlist",
     "skip_download": True,
     "quiet": True,
     "no_warnings": True,
@@ -202,7 +202,7 @@ async def search_youtube(query: str, limit: int = 8):
                 if not entry:
                     continue
                 video_id = entry.get("id")
-                url = entry.get("url") or (f"https://www.youtube.com/watch?v={video_id}" if video_id else "")
+                url = f"https://www.youtube.com/watch?v={video_id}" if video_id else (entry.get("url") or "")
                 
                 thumbnails = entry.get("thumbnails", [])
                 thumbnail = ""
@@ -233,7 +233,7 @@ async def extract_audio_info(query_or_url: str, requester: str = "Web User"):
     """Extracts direct audio stream URL and detailed track metadata with multi-tier fallback."""
     query_or_url = query_or_url.strip()
 
-    # If query is text, clean search noise and resolve top official YouTube track first
+    # If query is text, resolve top official YouTube video first
     if not (query_or_url.startswith("http://") or query_or_url.startswith("https://")):
         cleaned = re.sub(r"(?i)\b(by|song|songs|track|official|video|audio|lyrics)\b", " ", query_or_url)
         cleaned = " ".join(cleaned.split()) or query_or_url
