@@ -116,7 +116,7 @@ YTDL_OPTIONS = {
     "source_address": "0.0.0.0",
     "extractor_args": {
         "youtube": {
-            "player_client": ["android", "android_creator", "web"]
+            "player_client": ["android", "android_music", "android_creator", "tv_embedded"]
         }
     },
     "http_headers": {
@@ -279,7 +279,7 @@ async def extract_audio_info(query_or_url: str, requester: str = "Web User"):
                 "logger": SilentYTDLLogger(),
                 "extractor_args": {
                     "youtube": {
-                        "player_client": ["android", "android_creator"]
+                        "player_client": ["android", "android_music", "android_creator", "tv_embedded"]
                     }
                 },
                 "http_headers": {
@@ -295,9 +295,9 @@ async def extract_audio_info(query_or_url: str, requester: str = "Web User"):
         except Exception:
             pass
 
-        # 3. Third pass: try with mweb/ios clients
+        # 3. Third pass: try with tv / web clients
         try:
-            mweb_opts = {
+            fallback_opts = {
                 "format": "ba/b/bestaudio/best",
                 "noplaylist": True,
                 "nocheckcertificate": True,
@@ -306,12 +306,12 @@ async def extract_audio_info(query_or_url: str, requester: str = "Web User"):
                 "logger": SilentYTDLLogger(),
                 "extractor_args": {
                     "youtube": {
-                        "player_client": ["mweb", "ios"]
+                        "player_client": ["tv_embedded", "tv", "web"]
                     }
                 }
             }
-            with yt_dlp.YoutubeDL(mweb_opts) as mweb_ytdl:
-                info = mweb_ytdl.extract_info(target, download=False)
+            with yt_dlp.YoutubeDL(fallback_opts) as fb_ytdl:
+                info = fb_ytdl.extract_info(target, download=False)
                 if info:
                     entry = info["entries"][0] if "entries" in info and info["entries"] else info
                     if entry and entry.get("url"):
