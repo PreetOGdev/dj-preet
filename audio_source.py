@@ -116,7 +116,7 @@ YTDL_OPTIONS = {
     "source_address": "0.0.0.0",
     "extractor_args": {
         "youtube": {
-            "player_client": ["android", "android_music", "android_creator", "tv_embedded"]
+            "player_client": ["android", "web_embedded", "mweb", "ios", "tv"]
         }
     },
     "http_headers": {
@@ -136,6 +136,14 @@ SEARCH_OPTIONS = {
     "no_warnings": True,
     "logger": SilentYTDLLogger(),
     "default_search": "ytsearch",
+    "extractor_args": {
+        "youtube": {
+            "player_client": ["android", "web_embedded", "mweb", "ios", "tv"]
+        }
+    },
+    "http_headers": {
+        "User-Agent": "Mozilla/5.0 (Linux; Android 13; SM-G981B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/116.0.0.0 Mobile Safari/537.36",
+    }
 }
 
 if cookie_file_path and os.path.exists(cookie_file_path):
@@ -281,7 +289,7 @@ async def extract_audio_info(query_or_url: str, requester: str = "Web User"):
                 "logger": SilentYTDLLogger(),
                 "extractor_args": {
                     "youtube": {
-                        "player_client": ["android", "android_music", "android_creator", "tv_embedded"]
+                        "player_client": ["android", "web_embedded", "mweb", "ios", "tv"]
                     }
                 },
                 "http_headers": {
@@ -299,7 +307,7 @@ async def extract_audio_info(query_or_url: str, requester: str = "Web User"):
         except Exception:
             pass
 
-        # 3. Third pass: try with tv / web clients
+        # 3. Third pass: try with web_embedded / tv / web clients
         try:
             fallback_opts = {
                 "format": "ba/b/bestaudio/best",
@@ -310,7 +318,7 @@ async def extract_audio_info(query_or_url: str, requester: str = "Web User"):
                 "logger": SilentYTDLLogger(),
                 "extractor_args": {
                     "youtube": {
-                        "player_client": ["tv_embedded", "tv", "web"]
+                        "player_client": ["web_embedded", "tv", "web"]
                     }
                 }
             }
