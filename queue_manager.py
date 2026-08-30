@@ -349,13 +349,19 @@ class GuildMusicPlayer:
         if not target_vc and guild.voice_channels:
             target_vc = guild.voice_channels[0]
 
+        if self.voice_client and self.voice_client.is_connected():
+            return self.voice_client
+
         if target_vc:
             try:
                 if not guild.voice_client:
-                    self.voice_client = await target_vc.connect(timeout=8.0, reconnect=True)
+                    self.voice_client = await target_vc.connect(timeout=10.0, reconnect=True)
                 elif not guild.voice_client.is_connected():
-                    await guild.voice_client.disconnect()
-                    self.voice_client = await target_vc.connect(timeout=8.0, reconnect=True)
+                    try:
+                        await guild.voice_client.disconnect(force=True)
+                    except Exception:
+                        pass
+                    self.voice_client = await target_vc.connect(timeout=10.0, reconnect=True)
                 else:
                     self.voice_client = guild.voice_client
                     if [m for m in target_vc.members if not m.bot] and self.voice_client.channel != target_vc:

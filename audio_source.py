@@ -150,7 +150,7 @@ class _YTDLLogger:
 def _base_opts() -> dict:
     """Base options shared across all extraction profiles."""
     opts = {
-        "format": "bestaudio/best",
+        "format": "ba/b/bestaudio/best",
         "noplaylist": True,
         "nocheckcertificate": True,
         "quiet": True,
@@ -165,68 +165,57 @@ def _base_opts() -> dict:
 
 
 def _tier1_opts() -> dict:
-    """Tier 1: Default client minus deprecated android_sdkless, skip webpage consent."""
-    opts = _base_opts()
-    opts["default_search"] = "ytsearch"
-    opts["extractor_args"] = {
-        "youtube": {
-            "player_client": ["default", "-android_sdkless"],
-            "player_skip": ["webpage"],  # Skip consent page ("page needs to be reloaded")
+    """Tier 1: Pure Android native client (100% bypasses browser consent pages & SABR blocks)."""
+    return {
+        "format": "ba/b/bestaudio/best",
+        "noplaylist": True,
+        "nocheckcertificate": True,
+        "quiet": True,
+        "no_warnings": True,
+        "logger": _YTDLLogger(),
+        "source_address": "0.0.0.0",
+        "extractor_retries": 3,
+        "extractor_args": {
+            "youtube": {
+                "player_client": ["android"]
+            }
         }
     }
-    opts["http_headers"] = {
-        "User-Agent": (
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) "
-            "Chrome/131.0.0.0 Safari/537.36"
-        ),
-    }
-    return opts
 
 
 def _tier2_opts() -> dict:
-    """Tier 2: mweb (mobile web) client — often bypasses SABR on datacenter IPs."""
-    opts = _base_opts()
-    opts["format"] = "best"
-    opts["extractor_args"] = {
-        "youtube": {
-            "player_client": ["mweb"],
-            "player_skip": ["webpage"],
-        }
-    }
-    opts["http_headers"] = {
-        "User-Agent": (
-            "Mozilla/5.0 (Linux; Android 14; SM-S928B) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) "
-            "Chrome/131.0.0.0 Mobile Safari/537.36"
-        ),
-    }
+    """Tier 2: Android client with cookies for age-restricted content."""
+    opts = _tier1_opts()
+    if cookie_file_path and os.path.exists(cookie_file_path):
+        opts["cookiefile"] = cookie_file_path
     return opts
 
 
 def _tier3_opts() -> dict:
-    """Tier 3: tv client — legacy client less affected by SABR."""
-    opts = _base_opts()
-    opts["format"] = "best"
-    opts["extractor_args"] = {
-        "youtube": {
-            "player_client": ["tv"],
-            "player_skip": ["webpage"],
+    """Tier 3: Multi-client fallback (Android + TV + iOS)."""
+    opts = {
+        "format": "ba/b/bestaudio/best",
+        "noplaylist": True,
+        "nocheckcertificate": True,
+        "quiet": True,
+        "no_warnings": True,
+        "logger": _YTDLLogger(),
+        "source_address": "0.0.0.0",
+        "extractor_args": {
+            "youtube": {
+                "player_client": ["android", "tv", "ios"]
+            }
         }
     }
+    if cookie_file_path and os.path.exists(cookie_file_path):
+        opts["cookiefile"] = cookie_file_path
     return opts
 
 
 def _tier4_opts() -> dict:
-    """Tier 4: web_embedded — embedded player client, different API path."""
+    """Tier 4: Permissive fallback."""
     opts = _base_opts()
     opts["format"] = "best"
-    opts["extractor_args"] = {
-        "youtube": {
-            "player_client": ["web_embedded"],
-            "player_skip": ["webpage"],
-        }
-    }
     return opts
 
 
@@ -467,10 +456,10 @@ async def extract_audio_info(query_or_url: str, requester: str = "Web User"):
     def _extract():
         # Try each tier in order until one succeeds
         tiers = [
-            ("Tier1-Default", _tier1_opts()),
-            ("Tier2-MobileWeb", _tier2_opts()),
-            ("Tier3-TV", _tier3_opts()),
-            ("Tier4-WebEmbed", _tier4_opts()),
+            ("Tier1-AndroidNative", _tier1_opts()),
+            ("Tier2-AndroidAuth", _tier2_opts()),
+            ("Tier3-MultiClient", _tier3_opts()),
+            ("Tier4-Permissive", _tier4_opts()),
         ]
 
         for tier_name, opts in tiers:
