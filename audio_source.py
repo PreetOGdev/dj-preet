@@ -38,13 +38,27 @@ AUDIO_FILTERS = {
 # Cookie file auto-detection (Render Secret Files and Environment Variables)
 cookie_file_path = None
 
-# 1. Check for Render Secret Files at /etc/secrets/
-for secret_cand in ["/etc/secrets/youtube_cookies.txt", "/etc/secrets/cookies.txt"]:
-    if os.path.exists(secret_cand):
-        cookie_file_path = secret_cand
-        break
+# Cookie file auto-detection (Render Secret Files and Environment Variables)
+cookie_file_path = None
 
-# 2. Check for YOUTUBE_COOKIES environment variable and auto-repair Netscape format
+# 1. Scan Render Secret Files directory (/etc/secrets) for any uploaded cookie file
+if os.path.exists("/etc/secrets"):
+    for fname in os.listdir("/etc/secrets"):
+        fpath = os.path.join("/etc/secrets", fname)
+        if os.path.isfile(fpath):
+            cookie_file_path = fpath
+            print(f"[AudioSource] Loaded Render Secret File: {fpath}")
+            break
+
+# 2. Check local workspace directory for cookies.txt
+if not cookie_file_path:
+    for local_name in ["youtube_cookies.txt", "cookies.txt", "cookie.txt"]:
+        local_path = os.path.join(os.path.dirname(__file__), local_name)
+        if os.path.exists(local_path):
+            cookie_file_path = local_path
+            break
+
+# 3. Check for YOUTUBE_COOKIES environment variable and auto-repair Netscape format
 raw_cookies = os.getenv("YOUTUBE_COOKIES", "").strip()
 if not cookie_file_path and raw_cookies:
     try:
@@ -63,7 +77,6 @@ if not cookie_file_path and raw_cookies:
             if not line_str or line_str.startswith("#"):
                 lines.append(line)
             else:
-                # Convert space-separated tokens to tab-separated Netscape format
                 parts = re.split(r"[ \t]+", line_str)
                 if len(parts) >= 7:
                     lines.append("\t".join(parts[:7]))
@@ -84,7 +97,6 @@ class SilentYTDLLogger:
         # Suppress redundant YouTube captcha / sign-in warnings since fail-safe handles playback
         if "Sign in to confirm" in msg or "Requested format is not available" in msg or "cookies" in msg:
             return
-        # Only log critical unhandled errors
         if not ("HTTP Error 403" in msg or "429" in msg):
             print(f"[AudioSource/YTDL] {msg}")
 
@@ -104,11 +116,11 @@ YTDL_OPTIONS = {
     "source_address": "0.0.0.0",
     "extractor_args": {
         "youtube": {
-            "player_client": ["web", "mweb", "android", "ios"]
+            "player_client": ["android", "android_creator", "web"]
         }
     },
     "http_headers": {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
+        "User-Agent": "Mozilla/5.0 (Linux; Android 13; SM-G981B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/116.0.0.0 Mobile Safari/537.36",
         "Accept-Language": "en-US,en;q=0.9",
     }
 }
