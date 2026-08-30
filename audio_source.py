@@ -31,7 +31,7 @@ AUDIO_FILTERS = {
 }
 
 YTDL_OPTIONS = {
-    "format": "bestaudio[ext=webm]/bestaudio[ext=m4a]/bestaudio/best",
+    "format": "bestaudio/best",
     "outtmpl": "%(extractor)s-%(id)s-%(title)s.%(ext)s",
     "restrictfilenames": True,
     "noplaylist": True,
@@ -44,9 +44,13 @@ YTDL_OPTIONS = {
     "source_address": "0.0.0.0",
     "extractor_args": {
         "youtube": {
-            "player_client": ["android", "web"]
+            "player_client": ["android", "ios", "mweb", "web"]
         }
     },
+    "http_headers": {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
+        "Accept-Language": "en-US,en;q=0.9",
+    }
 }
 
 SEARCH_OPTIONS = {
@@ -56,6 +60,11 @@ SEARCH_OPTIONS = {
     "quiet": True,
     "no_warnings": True,
     "default_search": "ytsearch",
+    "extractor_args": {
+        "youtube": {
+            "player_client": ["android", "web"]
+        }
+    }
 }
 
 ytdl = yt_dlp.YoutubeDL(YTDL_OPTIONS)
@@ -73,6 +82,34 @@ def format_duration(seconds):
     return f"{mins:02d}:{secs:02d}"
 
 
+def _format_track_entry(entry: dict, fallback_query: str, requester: str = "Web User") -> dict:
+    video_id = entry.get("id", "")
+    title = entry.get("title", "Unknown Title")
+    channel = entry.get("uploader") or entry.get("channel") or "Unknown Artist"
+    duration = entry.get("duration") or 0
+    webpage_url = entry.get("webpage_url") or entry.get("url") or (f"https://www.youtube.com/watch?v={video_id}" if video_id else "")
+    stream_url = entry.get("url")
+    
+    thumbnails = entry.get("thumbnails", [])
+    thumbnail = ""
+    if thumbnails:
+        thumbnail = thumbnails[-1].get("url", "")
+    elif video_id:
+        thumbnail = f"https://i.ytimg.com/vi/{video_id}/hqdefault.jpg"
+
+    return {
+        "id": video_id or str(hash(webpage_url or fallback_query)),
+        "title": title,
+        "channel": channel,
+        "duration": duration,
+        "formatted_duration": format_duration(duration),
+        "thumbnail": thumbnail,
+        "webpage_url": webpage_url,
+        "stream_url": stream_url,
+        "requester": requester,
+    }
+
+
 async def search_youtube(query: str, limit: int = 8):
     """Searches YouTube for tracks matching query and returns metadata list."""
     loop = asyncio.get_running_loop()
@@ -81,13 +118,10 @@ async def search_youtube(query: str, limit: int = 8):
         try:
             if query.startswith("http://") or query.startswith("https://"):
                 info = search_ytdl.extract_info(query, download=False)
-                if "entries" in info:
-                    entries = info["entries"]
-                else:
-                    entries = [info]
+                entries = info.get("entries", [info]) if info else []
             else:
                 info = search_ytdl.extract_info(f"ytsearch{limit}:{query}", download=False)
-                entries = info.get("entries", [])
+                entries = info.get("entries", []) if info else []
 
             results = []
             for entry in entries:
@@ -122,47 +156,60 @@ async def search_youtube(query: str, limit: int = 8):
 
 
 async def extract_audio_info(query_or_url: str, requester: str = "Web User"):
-    """Extracts direct audio stream URL and detailed track metadata."""
+    """Extracts direct audio stream URL and detailed track metadata with multi-tier fallback."""
     loop = asyncio.get_running_loop()
 
     def _extract():
+        # 1. Direct extraction with primary options
         try:
             info = ytdl.extract_info(query_or_url, download=False)
-            if "entries" in info:
-                entry = info["entries"][0]
-            else:
-                entry = info
-
-            if not entry:
-                return None
-
-            video_id = entry.get("id", "")
-            title = entry.get("title", "Unknown Title")
-            channel = entry.get("uploader") or entry.get("channel") or "Unknown Artist"
-            duration = entry.get("duration") or 0
-            webpage_url = entry.get("webpage_url") or entry.get("url") or (f"https://www.youtube.com/watch?v={video_id}" if video_id else "")
-            stream_url = entry.get("url")
-            
-            thumbnails = entry.get("thumbnails", [])
-            thumbnail = ""
-            if thumbnails:
-                thumbnail = thumbnails[-1].get("url", "")
-            elif video_id:
-                thumbnail = f"https://i.ytimg.com/vi/{video_id}/hqdefault.jpg"
-
-            return {
-                "id": video_id or str(hash(webpage_url)),
-                "title": title,
-                "channel": channel,
-                "duration": duration,
-                "formatted_duration": format_duration(duration),
-                "thumbnail": thumbnail,
-                "webpage_url": webpage_url,
-                "stream_url": stream_url,
-                "requester": requester,
-            }
+            if info:
+                entry = info["entries"][0] if "entries" in info and info["entries"] else info
+                if entry and entry.get("url"):
+                    return _format_track_entry(entry, query_or_url, requester)
         except Exception as e:
-            print(f"[AudioSource] Extraction error for '{query_or_url}': {e}")
+            print(f"[AudioSource] First-pass extraction error for '{query_or_url}': {e}")
+
+        # 2. If it's a YouTube URL, extract clean video ID and retry with iOS/Android client
+        if "youtube.com" in query_or_url or "youtu.be" in query_or_url:
+            try:
+                vid_id = None
+                if "v=" in query_or_url:
+                    vid_id = query_or_url.split("v=")[1].split("&")[0]
+                elif "youtu.be/" in query_or_url:
+                    vid_id = query_or_url.split("youtu.be/")[1].split("?")[0]
+                
+                target = f"https://www.youtube.com/watch?v={vid_id}" if vid_id else query_or_url
+                fallback_opts = dict(YTDL_OPTIONS)
+                fallback_opts["extractor_args"] = {"youtube": {"player_client": ["ios", "android"]}}
+                with yt_dlp.YoutubeDL(fallback_opts) as fallback_ytdl:
+                    info = fallback_ytdl.extract_info(target, download=False)
+                    if info:
+                        entry = info["entries"][0] if "entries" in info and info["entries"] else info
+                        if entry and entry.get("url"):
+                            return _format_track_entry(entry, query_or_url, requester)
+            except Exception as ex:
+                print(f"[AudioSource] Second-pass extraction error for '{query_or_url}': {ex}")
+
+        # 3. Fallback: Search YouTube if query was text
+        if not (query_or_url.startswith("http://") or query_or_url.startswith("https://")):
+            try:
+                info = search_ytdl.extract_info(f"ytsearch1:{query_or_url}", download=False)
+                if info and "entries" in info and info["entries"]:
+                    first_url = info["entries"][0].get("url") or f"https://www.youtube.com/watch?v={info['entries'][0].get('id')}"
+                    return _extract_single(first_url, requester)
+            except Exception:
+                pass
+
+        return None
+
+    def _extract_single(url: str, req: str):
+        try:
+            info = ytdl.extract_info(url, download=False)
+            entry = info["entries"][0] if "entries" in info and info["entries"] else info
+            if entry and entry.get("url"):
+                return _format_track_entry(entry, url, req)
+        except Exception:
             return None
 
     return await loop.run_in_executor(None, _extract)

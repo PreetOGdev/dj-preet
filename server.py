@@ -3,7 +3,7 @@ import asyncio
 import json
 import time
 from typing import Set
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Query, Body, HTTPException
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Query, Body, HTTPException, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -65,6 +65,11 @@ def setup_player_listener():
 # ---------------------------
 # REST API Endpoints
 # ---------------------------
+
+@app.get("/favicon.ico", include_in_schema=False)
+async def favicon():
+    return Response(status_code=204)
+
 
 @app.get("/api/status")
 async def get_status():
@@ -207,6 +212,12 @@ async def add_to_queue(req: AddTrackRequest):
     
     # Extract track info from YouTube
     track_info = await extract_audio_info(req.query, requester=req.requester)
+    if not track_info:
+        # Fallback: Try searching by query string
+        results = await search_youtube(req.query, limit=1)
+        if results and results[0].get("url"):
+            track_info = await extract_audio_info(results[0]["url"], requester=req.requester)
+
     if not track_info:
         raise HTTPException(status_code=404, detail=f"Could not extract track for: {req.query}")
 
