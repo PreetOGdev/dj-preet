@@ -136,14 +136,6 @@ SEARCH_OPTIONS = {
     "no_warnings": True,
     "logger": SilentYTDLLogger(),
     "default_search": "ytsearch",
-    "extractor_args": {
-        "youtube": {
-            "player_client": ["android", "web_embedded", "mweb", "ios", "tv"]
-        }
-    },
-    "http_headers": {
-        "User-Agent": "Mozilla/5.0 (Linux; Android 13; SM-G981B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/116.0.0.0 Mobile Safari/537.36",
-    }
 }
 
 if cookie_file_path and os.path.exists(cookie_file_path):
