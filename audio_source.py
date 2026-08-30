@@ -140,11 +140,15 @@ class _YTDLLogger:
 
 
 # ─── yt-dlp Option Profiles ──────────────────────────────────────
+# IMPORTANT: On Render datacenter IPs, YouTube's SABR experiment
+# often only serves combined video+audio formats (like itag 18/22),
+# NOT audio-only streams. We use permissive format strings that
+# accept ANY format with audio. FFmpeg's -vn strips the video.
 
 def _base_opts() -> dict:
     """Base options shared across all extraction profiles."""
     opts = {
-        "format": "bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio/best",
+        "format": "bestaudio/best",  # Accept audio-only OR combined formats
         "noplaylist": True,
         "nocheckcertificate": True,
         "quiet": True,
@@ -158,15 +162,17 @@ def _base_opts() -> dict:
 
 
 def _primary_opts() -> dict:
-    """Primary extraction: uses cookies + default client."""
+    """Primary extraction: cookies + default client, permissive format."""
     opts = _base_opts()
     opts["default_search"] = "ytsearch"
     return opts
 
 
 def _android_opts() -> dict:
-    """Android client — uses cookies since Render datacenter IPs are flagged."""
+    """Android client — datacenter-friendly, accepts ANY format."""
     opts = _base_opts()
+    # On SABR-restricted IPs, Android may only serve itag 18 (360p combined)
+    opts["format"] = "best"  # Accept literally anything
     opts["extractor_args"] = {
         "youtube": {"player_client": ["android"]}
     }
@@ -180,8 +186,9 @@ def _android_opts() -> dict:
 
 
 def _web_opts() -> dict:
-    """Web client fallback with cookies."""
+    """Web client fallback — accepts ANY format."""
     opts = _base_opts()
+    opts["format"] = "best"  # Accept literally anything
     opts["extractor_args"] = {
         "youtube": {"player_client": ["web"]}
     }
@@ -449,6 +456,37 @@ async def extract_audio_info(query_or_url: str, requester: str = "Web User"):
                         logger.warning(f"[Extract/Tier3] Got info but no stream URL for: {target}")
         except Exception as e:
             logger.warning(f"[Extract/Tier3] Failed for {target}: {e}")
+
+        # ── Tier 4: Last resort — no format filter, dump diagnostics ──
+        try:
+            logger.info(f"[Extract/Tier4] Last resort (no format filter) for: {target}")
+            opts = _base_opts()
+            opts["format"] = None  # Accept literally ANY format
+            opts["listformats"] = False
+            with yt_dlp.YoutubeDL(opts) as ydl:
+                info = ydl.extract_info(target, download=False)
+                if info:
+                    entry = info["entries"][0] if "entries" in info and info["entries"] else info
+                    # Log available formats for diagnostics
+                    formats = entry.get("formats", [])
+                    logger.info(f"[Extract/Tier4] Available formats: {len(formats)}")
+                    for fmt in formats[:10]:
+                        logger.info(
+                            f"  itag={fmt.get('format_id')} "
+                            f"ext={fmt.get('ext')} "
+                            f"acodec={fmt.get('acodec','none')} "
+                            f"vcodec={fmt.get('vcodec','none')} "
+                            f"url={'YES' if fmt.get('url') else 'NO'}"
+                        )
+                    stream = _get_stream_url(entry)
+                    if stream:
+                        res = _format_track_entry(entry, target, requester)
+                        logger.info(f"[Extract/Tier4] ✅ Success (last resort): {res['title']}")
+                        return res
+                    else:
+                        logger.error(f"[Extract/Tier4] {len(formats)} formats found but NONE have a playable URL")
+        except Exception as e:
+            logger.warning(f"[Extract/Tier4] Failed for {target}: {e}")
 
         logger.error(f"[Extract] ❌ ALL TIERS FAILED for: {target}")
         return None
