@@ -12,7 +12,7 @@ if sys.platform == "win32":
 
 load_dotenv()
 
-from bot import bot, player_manager
+from bot import bot, player_manager, rearm_bot
 from server import app, broadcast_state, setup_player_listener
 
 
@@ -47,6 +47,8 @@ async def run_bot():
 
         try:
             logger.info("🚀 Starting Discord Bot...")
+            if bot.is_closed():
+                rearm_bot()
             await bot.start(token)
             retry_delay = 5
         except Exception as e:
@@ -58,12 +60,6 @@ async def run_bot():
                 logger.error(f"❌ Discord Bot Error: {e}")
                 logger.warning("Check your bot token in .env or on Web Dashboard")
                 retry_delay = 10
-
-            try:
-                if not bot.is_closed():
-                    await bot.close()
-            except Exception:
-                pass
 
             await asyncio.sleep(retry_delay)
 

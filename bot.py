@@ -21,6 +21,14 @@ bot = commands.Bot(command_prefix=BOT_PREFIX, intents=intents, help_command=None
 player_manager = MusicPlayerManager(bot)
 
 
+def rearm_bot():
+    """Re-arms bot client so it can be cleanly started again after an error or close."""
+    import aiohttp
+    bot._closed = False
+    bot.http.connector = aiohttp.TCPConnector(limit=0)
+    bot.http._HTTPClient__session = aiohttp.ClientSession(connector=bot.http.connector)
+
+
 _commands_synced = False
 
 @bot.event
