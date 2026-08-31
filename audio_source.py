@@ -165,8 +165,8 @@ def _base_opts() -> dict:
 
 
 def _tier1_opts() -> dict:
-    """Tier 1: Auto EJS multi-stream negotiation with Deno JS challenge solver."""
-    return {
+    """Tier 1: Auto EJS multi-stream negotiation with Deno JS challenge solver and session cookies."""
+    opts = {
         "format": "ba/b/bestaudio/best",
         "noplaylist": True,
         "nocheckcertificate": True,
@@ -174,8 +174,11 @@ def _tier1_opts() -> dict:
         "no_warnings": True,
         "logger": _YTDLLogger(),
         "source_address": "0.0.0.0",
-        "extractor_retries": 3,
+        "extractor_retries": 2,
     }
+    if cookie_file_path and os.path.exists(cookie_file_path):
+        opts["cookiefile"] = cookie_file_path
+    return opts
 
 
 def _tier2_opts() -> dict:
@@ -201,11 +204,17 @@ def _tier3_opts() -> dict:
 
 
 def _tier4_opts() -> dict:
-    """Tier 4: Cookie authenticated fallback."""
-    opts = _tier1_opts()
-    if cookie_file_path and os.path.exists(cookie_file_path):
-        opts["cookiefile"] = cookie_file_path
-    return opts
+    """Tier 4: Pure anonymous fallback (no cookies)."""
+    return {
+        "format": "ba/b/bestaudio/best",
+        "noplaylist": True,
+        "nocheckcertificate": True,
+        "quiet": True,
+        "no_warnings": True,
+        "logger": _YTDLLogger(),
+        "source_address": "0.0.0.0",
+        "extractor_retries": 2,
+    }
 
 
 def _search_opts() -> dict:

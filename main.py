@@ -33,6 +33,7 @@ async def playback_ticker():
 
 
 async def run_bot():
+    retry_delay = 5
     while True:
         token = os.getenv("DISCORD_TOKEN", "").strip().strip("'\"")
         if not token:
@@ -47,10 +48,24 @@ async def run_bot():
         try:
             logger.info("🚀 Starting Discord Bot...")
             await bot.start(token)
+            retry_delay = 5
         except Exception as e:
-            logger.error(f"❌ Discord Bot Error: {e}")
-            logger.warning("Check your bot token in .env or on Web Dashboard")
-            await asyncio.sleep(5)
+            error_str = str(e)
+            if "429" in error_str or "Too Many Requests" in error_str:
+                retry_delay = min(120, max(30, retry_delay * 2))
+                logger.warning(f"⚠️ Discord 429 Rate Limit encountered. Cooling down for {retry_delay}s to let Discord rate limits clear...")
+            else:
+                logger.error(f"❌ Discord Bot Error: {e}")
+                logger.warning("Check your bot token in .env or on Web Dashboard")
+                retry_delay = 10
+
+            try:
+                if not bot.is_closed():
+                    await bot.close()
+            except Exception:
+                pass
+
+            await asyncio.sleep(retry_delay)
 
 
 async def run_web_server():

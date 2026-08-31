@@ -21,20 +21,25 @@ bot = commands.Bot(command_prefix=BOT_PREFIX, intents=intents, help_command=None
 player_manager = MusicPlayerManager(bot)
 
 
+_commands_synced = False
+
 @bot.event
 async def on_ready():
+    global _commands_synced
     print(f"==================================================")
     print(f"✨ Discord Bot Logged in as: {bot.user} (ID: {bot.user.id})")
     print(f"📡 Connected to {len(bot.guilds)} guilds")
     print(f"🌐 Web Dashboard running on: http://localhost:{os.getenv('PORT', '8000')}")
     print(f"==================================================")
 
-    # Sync slash commands
-    try:
-        synced = await bot.tree.sync()
-        print(f"✅ Synced {len(synced)} application slash commands.")
-    except Exception as e:
-        print(f"⚠️ Slash command sync warning: {e}")
+    # Sync slash commands once on startup
+    if not _commands_synced:
+        try:
+            synced = await bot.tree.sync()
+            _commands_synced = True
+            print(f"✅ Synced {len(synced)} application slash commands.")
+        except Exception as e:
+            print(f"⚠️ Slash command sync warning: {e}")
 
     # Set bot rich presence
     activity = discord.Activity(
