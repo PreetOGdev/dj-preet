@@ -73,11 +73,15 @@ async def run_web_server():
         app=app,
         host=host,
         port=port,
-        log_level="warning",
-        loop="asyncio"
+        log_level="warning"
     )
     server = uvicorn.Server(config)
-    await server.serve()
+    while True:
+        try:
+            await server.serve()
+        except Exception as e:
+            logger.error(f"❌ Web server error: {e}")
+            await asyncio.sleep(2)
 
 
 async def render_keep_alive():
