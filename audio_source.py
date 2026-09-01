@@ -58,6 +58,15 @@ AUDIO_FILTERS = {
     "karaoke": "-vn -af pan=stereo|c0=c0-c1|c1=c1-c0",
 }
 
+# ─── Global Semaphore for Memory Management (OOM Prevention) ────────
+_YTDL_SEMAPHORE: Optional[asyncio.Semaphore] = None
+
+def _get_semaphore() -> asyncio.Semaphore:
+    global _YTDL_SEMAPHORE
+    if _YTDL_SEMAPHORE is None:
+        _YTDL_SEMAPHORE = asyncio.Semaphore(2)
+    return _YTDL_SEMAPHORE
+
 # ─── Cookie File Auto-Detection ───────────────────────────────────
 # CRITICAL: yt-dlp needs to READ and WRITE cookies during extraction.
 # Render mounts /etc/secrets/ as READ-ONLY, so we must COPY cookie
@@ -348,7 +357,8 @@ async def search_youtube(query: str, limit: int = 8):
             logger.error(f"[Search] Error for '{query}': {e}")
             return []
 
-    return await loop.run_in_executor(None, _search)
+    async with _get_semaphore():
+        return await loop.run_in_executor(None, _search)
 
 
 # ─── Audio Extraction (Multi-Tier Fallback) ──────────────────────
@@ -445,7 +455,8 @@ async def extract_audio_info(query_or_url: str, requester: str = "Web User"):
         logger.error(f"[Extract] ❌ ALL {len(tiers)} TIERS FAILED for: {target}")
         return None
 
-    return await loop.run_in_executor(None, _extract)
+    async with _get_semaphore():
+        return await loop.run_in_executor(None, _extract)
 
 
 # ─── Autoplay Recommendation ─────────────────────────────────────
@@ -489,7 +500,8 @@ async def get_recommended_track(seed_track: dict, exclude_ids: Set[str] = None) 
             logger.warning(f"[Autoplay] Radio mix fetch note: {e}")
         return []
 
-    entries = await loop.run_in_executor(None, _fetch_radio_mix)
+    async with _get_semaphore():
+        entries = await loop.run_in_executor(None, _fetch_radio_mix)
 
     blacklist = ["jukebox", "full album", "1 hour", "10 hours", "podcast", "mashup", "compilation"]
 
@@ -566,8 +578,8 @@ class YTDLSource(discord.PCMVolumeTransformer):
 
         # ── Step 1: Download the audio to a temp file ──────────────────────
         logger.info(f"[Source] Downloading audio to disk: {title}")
-
-        temp_path = await loop.run_in_executor(None, _download_audio_to_file, track_info)
+        async with _get_semaphore():
+            temp_path = await loop.run_in_executor(None, _download_audio_to_file, track_info)
 
         if not temp_path:
             # Fallback: stream directly from URL if download failed
@@ -750,7 +762,8 @@ async def prefetch_audio_download(track_info: dict) -> Optional[str]:
     logger.info(f"[Prefetch] Pre-downloading in background: {title}")
     loop = asyncio.get_running_loop()
     try:
-        result = await loop.run_in_executor(None, _download_audio_to_file, track_info)
+        async with _get_semaphore():
+            result = await loop.run_in_executor(None, _download_audio_to_file, track_info)
         if result:
             logger.info(f"[Prefetch] ✅ Pre-download complete: {title}")
         else:
