@@ -64,6 +64,8 @@ class GuildMusicPlayer:
 
         # Path of the previous track's temp audio file — deleted when next song starts
         self._prev_track_file_path: Optional[str] = None
+        # Guard to prevent duplicate concurrent autoplay prefetch tasks
+        self._autoplay_prefetch_running: bool = False
 
         self.tracks_played_count: int = 0
         self.start_timestamp: float = time.time()
@@ -403,10 +405,23 @@ class GuildMusicPlayer:
                 next_track = self.queue.pop(0) if self.queue else None
                 self._save_queue_to_db()
 
-            # Autoplay: If queue is empty and autoplay is ON, discover distinct similar track
+            # Autoplay: queue is still empty after song ends.
+            # The background prefetch SHOULD have already added a track.
+            # If it hasn't (e.g. bot just enabled, or prefetch failed), wait briefly
+            # before doing a fresh fetch — but don't block the event loop for 10+ seconds.
             if not next_track and self.autoplay_enabled:
                 seed = last_played_track or (self.history[-1] if self.history else None)
-                if seed:
+                if seed and not self._autoplay_prefetch_running:
+                    # Give the background prefetch one last chance (it may be mid-flight)
+                    for _ in range(6):  # Wait up to 3s (6 × 0.5s)
+                        await asyncio.sleep(0.5)
+                        if self.queue:
+                            next_track = self.queue.pop(0)
+                            self._save_queue_to_db()
+                            break
+
+                # Still nothing — do a fresh fetch as last resort
+                if not next_track and seed:
                     self.is_loading = True
                     self.notify_state_changed()
                     exclude_ids = {t.id for t in self.history}
@@ -493,12 +508,14 @@ class GuildMusicPlayer:
             self.notify_state_changed()
 
             # ── Background pipeline: discover + pre-download next track ──────────
-            # Step 1: If autoplay and queue is empty, find the next track metadata
+            # Both tasks run in parallel. Prefetch adds a track to the queue;
+            # predownload polls the queue and downloads as soon as one appears.
             if self.autoplay_enabled and len(self.queue) == 0:
                 asyncio.create_task(self._prefetch_next_autoplay_track())
-            # Step 2: Pre-download whatever is next in queue (queue or just-prefetched autoplay)
-            # Small delay to let autoplay prefetch finish adding to queue first
-            asyncio.create_task(self._predownload_next_track(delay_seconds=3.0))
+            # Always launch predownload — it will poll queue and handle both
+            # manual-queue tracks (immediately available) and autoplay tracks
+            # (added ~10-15s later by _prefetch_next_autoplay_track).
+            asyncio.create_task(self._predownload_next_track())
 
         except Exception as e:
             logger.error(f"[Player] Failed to play track '{track.title}': {e}")
@@ -507,21 +524,31 @@ class GuildMusicPlayer:
             if self.queue or self.autoplay_enabled:
                 await self.play_next()
 
-    async def _predownload_next_track(self, delay_seconds: float = 3.0):
+    async def _predownload_next_track(self, delay_seconds: float = 0):
         """
-        Downloads the next track's audio file to disk while current song plays.
-        This guarantees instant playback with zero download wait on transition.
+        Downloads the next track's audio file to disk while the current song plays.
+        Polls the queue for up to 60s so it catches autoplay tracks even if the
+        radio-mix fetch takes a while (typically 10-15s on Render).
 
         Pipeline:
           Song A plays → _predownload_next_track() runs in background
+            → waits for queue to have a track (polls every 2s, up to 60s)
             → Song B downloaded to /tmp/B.webm
-          Song A ends → play_next() → _download_audio_to_file() hits cache for B
-            → Song B plays instantly → _predownload_next_track() starts Song C download ...
+          Song A ends → cache hit → Song B plays instantly
         """
-        await asyncio.sleep(delay_seconds)  # Short delay so autoplay prefetch can add to queue
+        if delay_seconds > 0:
+            await asyncio.sleep(delay_seconds)
 
-        if not self.queue:
-            return  # Nothing queued to pre-download
+        # Poll until something is in the queue or timeout
+        waited = 0
+        poll_interval = 2.0
+        max_wait = 60.0
+        while not self.queue:
+            if waited >= max_wait:
+                logger.debug("[Predownload] No track appeared in queue within 60s, giving up")
+                return
+            await asyncio.sleep(poll_interval)
+            waited += poll_interval
 
         next_track = self.queue[0]  # Peek (don't pop)
         logger.info(f"[Predownload] Starting background download: {next_track.title}")
@@ -535,6 +562,10 @@ class GuildMusicPlayer:
         """Discovers next autoplay song metadata and adds it to queue, then triggers audio pre-download."""
         if not self.autoplay_enabled or len(self.queue) > 0 or not self.current_track:
             return
+        if self._autoplay_prefetch_running:
+            logger.debug("[Autoplay] Prefetch already running, skipping duplicate")
+            return
+        self._autoplay_prefetch_running = True
         try:
             exclude_ids = {t.id for t in self.history}
             if self.current_track.id:
@@ -549,11 +580,12 @@ class GuildMusicPlayer:
                 self.queue.append(prefetched_track)
                 self._save_queue_to_db()
                 self.notify_state_changed()
-                logger.info(f"[Autoplay] Pre-fetched next track: {prefetched_track.title}")
-                # Immediately start downloading the audio for this autoplay track
-                asyncio.create_task(self._predownload_next_track(delay_seconds=0))
+                logger.info(f"[Autoplay] ✅ Pre-fetched next track: {prefetched_track.title}")
+                # _predownload_next_track is already polling — it will pick this up automatically
         except Exception as e:
             logger.warning(f"[Autoplay] Pre-fetch note: {e}")
+        finally:
+            self._autoplay_prefetch_running = False
 
     async def _handle_track_ended(self):
         await self.play_next()
