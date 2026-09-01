@@ -14,6 +14,7 @@ import json
 import logging
 import random
 import re
+import tempfile
 import threading
 import time
 import traceback
@@ -31,12 +32,39 @@ logger = logging.getLogger("DJ-Preet.Audio")
 system_ffmpeg = shutil.which("ffmpeg")
 FFMPEG_EXECUTABLE = system_ffmpeg or imageio_ffmpeg.get_ffmpeg_exe()
 
-FFMPEG_BEFORE_OPTIONS = (
+# When streaming from a URL we need heavy reconnect flags; when playing
+# from a local file those flags cause errors, so we use lighter options.
+FFMPEG_STREAM_BEFORE_OPTIONS = (
     "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 "
     "-probesize 32k -analyzeduration 0 "
     "-fflags nobuffer+fastseek+discardcorrupt -nostdin"
 )
+# For local-file playback: simple nostdin is enough.
+FFMPEG_FILE_BEFORE_OPTIONS = "-nostdin"
 FFMPEG_OPTIONS = "-vn"
+
+# ─── Temp Download Directory ────────────────────────────────────────
+# Use /tmp on Linux (Render), or system temp dir on Windows.
+TMP_AUDIO_DIR = "/tmp/dj_preet_audio"
+try:
+    os.makedirs(TMP_AUDIO_DIR, exist_ok=True)
+except OSError:
+    TMP_AUDIO_DIR = tempfile.gettempdir()
+logger_tmp = logging.getLogger("DJ-Preet.Audio")
+
+
+def _schedule_temp_cleanup(filepath: str, delay_seconds: float = 5.0):
+    """Delete a temp audio file after a short delay (gives FFmpeg time to fully release it)."""
+    def _delete():
+        time.sleep(delay_seconds)
+        try:
+            if filepath and os.path.exists(filepath):
+                os.remove(filepath)
+                logger.debug(f"[TmpClean] Deleted: {filepath}")
+        except Exception as e:
+            logger.debug(f"[TmpClean] Could not delete {filepath}: {e}")
+    t = threading.Thread(target=_delete, daemon=True)
+    t.start()
 
 # Audio filter presets for Equalizer
 AUDIO_FILTERS = {
@@ -608,45 +636,233 @@ class BufferedAudioSource(discord.AudioSource):
 # ─── Discord Audio Source ─────────────────────────────────────────
 
 class YTDLSource(discord.PCMVolumeTransformer):
-    """Discord AudioSource created from pre-buffered FFmpeg YouTube audio."""
+    """
+    Discord AudioSource that DOWNLOADS the audio to a temp file first,
+    then plays from disk. This eliminates CDN throttle, packet loss,
+    and voice drops on low-resource environments like Render.
+    """
 
-    def __init__(self, source, *, data, volume=0.8):
+    def __init__(self, source, *, data, volume=0.8, temp_file_path: str = None):
         super().__init__(source, volume)
         self.data = data
         self.title = data.get("title")
         self.url = data.get("webpage_url")
         self.duration = data.get("duration", 0)
+        self._temp_file_path = temp_file_path  # Scheduled for cleanup after playback
+
+    def cleanup(self):
+        """Clean up the underlying audio source. Temp file lifecycle is managed by _purge_old_audio_files."""
+        try:
+            super().cleanup()
+        except Exception:
+            pass
+        # NOTE: We intentionally do NOT delete the temp file here.
+        # Files are cleaned up by _purge_old_audio_files() at the start of
+        # each new download, so loop-mode tracks stay cached between replays.
 
     @classmethod
     async def create_source(cls, track_info: dict, *, volume=0.8, filter_name="none", seek_seconds=0):
-        """Create a BufferedAudioSource with audio filter and optional seek."""
-        stream_url = track_info.get("stream_url")
+        """
+        Download audio to /tmp and create an FFmpegPCMAudio from the local file.
+        Playing from disk is far more stable than streaming from YouTube CDN
+        on low-CPU, low-RAM hosts (Render free tier: 0.1 CPU / 512MB RAM).
+        """
+        loop = asyncio.get_running_loop()
+        video_id = track_info.get("id") or "unknown"
+        title = track_info.get("title", "Unknown")
+        webpage_url = track_info.get("webpage_url") or track_info.get("stream_url") or title
 
-        # Refresh stream URL if missing or expired
-        if not stream_url:
-            logger.info(f"[Source] Refreshing stream URL for: {track_info.get('title')}")
-            refreshed = await extract_audio_info(
-                track_info.get("webpage_url") or track_info.get("title")
+        # ── Step 1: Download the audio to a temp file ──────────────────────
+        logger.info(f"[Source] Downloading audio to disk: {title}")
+
+        temp_path = await loop.run_in_executor(None, _download_audio_to_file, track_info)
+
+        if not temp_path:
+            # Fallback: stream from URL (legacy path, less stable)
+            logger.warning(f"[Source] Download failed — falling back to stream URL for: {title}")
+            stream_url = track_info.get("stream_url")
+            if not stream_url:
+                refreshed = await extract_audio_info(webpage_url)
+                if refreshed:
+                    track_info.update(refreshed)
+                    stream_url = track_info.get("stream_url")
+            if not stream_url:
+                raise ValueError(f"Could not download or stream: {title}")
+
+            before_opts = FFMPEG_STREAM_BEFORE_OPTIONS
+            if seek_seconds and seek_seconds > 0:
+                before_opts = f"-ss {int(seek_seconds)} {before_opts}"
+            filter_opts = AUDIO_FILTERS.get(filter_name, FFMPEG_OPTIONS)
+            raw_ffmpeg = discord.FFmpegPCMAudio(
+                stream_url,
+                executable=FFMPEG_EXECUTABLE,
+                before_options=before_opts,
+                options=filter_opts,
             )
-            if refreshed:
-                track_info.update(refreshed)
-                stream_url = track_info.get("stream_url")
+            buffered = BufferedAudioSource(raw_ffmpeg, buffer_seconds=4.0)
+            return cls(buffered, data=track_info, volume=volume, temp_file_path=None)
 
-        if not stream_url:
-            raise ValueError(f"Could not resolve audio stream for: {track_info.get('title')}")
+        # ── Step 2: Play from local temp file ─────────────────────────────
+        logger.info(f"[Source] ✅ Playing from disk: {temp_path}")
 
-        before_opts = FFMPEG_BEFORE_OPTIONS
+        before_opts = FFMPEG_FILE_BEFORE_OPTIONS
         if seek_seconds and seek_seconds > 0:
-            before_opts = f"-ss {int(seek_seconds)} {before_opts}"
+            before_opts = f"-ss {int(seek_seconds)} {FFMPEG_FILE_BEFORE_OPTIONS}"
 
         filter_opts = AUDIO_FILTERS.get(filter_name, FFMPEG_OPTIONS)
 
         raw_ffmpeg = discord.FFmpegPCMAudio(
-            stream_url,
+            temp_path,
             executable=FFMPEG_EXECUTABLE,
             before_options=before_opts,
             options=filter_opts,
         )
+        # No BufferedAudioSource needed — local disk I/O has zero CDN jitter.
+        return cls(raw_ffmpeg, data=track_info, volume=volume, temp_file_path=temp_path)
 
-        buffered = BufferedAudioSource(raw_ffmpeg, buffer_seconds=4.0)
-        return cls(buffered, data=track_info, volume=volume)
+
+def _purge_old_audio_files(max_age_seconds: float = 300.0):
+    """Delete audio files in TMP_AUDIO_DIR older than max_age_seconds.
+    
+    Called at the start of each new download to keep disk usage in check
+    without breaking loop-mode playback (those files stay fresh).
+    """
+    try:
+        now = time.time()
+        for fname in os.listdir(TMP_AUDIO_DIR):
+            fpath = os.path.join(TMP_AUDIO_DIR, fname)
+            try:
+                if os.path.isfile(fpath) and (now - os.path.getmtime(fpath)) > max_age_seconds:
+                    os.remove(fpath)
+                    logger.debug(f"[TmpClean] Purged old file: {fpath}")
+            except Exception:
+                pass
+    except Exception as e:
+        logger.debug(f"[TmpClean] Purge scan error: {e}")
+
+
+def _download_audio_to_file(track_info: dict) -> Optional[str]:
+    """
+    Download audio from YouTube to a local temp file.
+    Returns the path to the downloaded file, or None on failure.
+
+    Strategy:
+    - Use the same tier-fallback as extract_audio_info but with download=True
+    - Skip FFmpeg post-processing (no codec conversion) — yt-dlp downloads the
+      raw opus/m4a/webm stream which FFmpeg can decode natively
+    - Target audio-only formats to keep file size small (~5-15 MB per song)
+    """
+    video_id = track_info.get("id") or "unknown"
+    title = track_info.get("title", "Unknown")
+    webpage_url = track_info.get("webpage_url") or ""
+    stream_url = track_info.get("stream_url") or ""
+
+    if not webpage_url and not stream_url:
+        logger.warning(f"[Download] No URL available for: {title}")
+        return None
+
+    # Use video ID for filename to allow reuse across seeks/loops
+    out_template = os.path.join(TMP_AUDIO_DIR, f"{video_id}.%(ext)s")
+
+    # Purge stale files (>5 min old) to manage Render disk usage before checking cache
+    _purge_old_audio_files(max_age_seconds=300.0)
+
+    # Check if already downloaded (e.g. when looping the same track)
+    for ext in ["webm", "m4a", "opus", "mp4", "ogg"]:
+        cached = os.path.join(TMP_AUDIO_DIR, f"{video_id}.{ext}")
+        if os.path.exists(cached) and os.path.getsize(cached) > 10_000:
+            logger.info(f"[Download] Cache hit: {cached}")
+            return cached
+
+
+    target = webpage_url or stream_url
+
+    # Build lightweight download options (no post-processing, audio-only)
+    def _dl_opts(extra: dict = None) -> dict:
+        opts = {
+            # Audio-only formats, prefer small ones (opus ~64kbps, m4a ~128kbps)
+            # Avoid video formats — we only need audio
+            "format": "bestaudio[abr<=128]/bestaudio/ba/b/best",
+            "outtmpl": out_template,
+            "noplaylist": True,
+            "nocheckcertificate": True,
+            "quiet": True,
+            "no_warnings": True,
+            "logger": _YTDLLogger(),
+            "source_address": "0.0.0.0",
+            # CRITICAL: No post-processors — skip ffmpeg remux entirely
+            # The raw stream (opus/m4a/webm) is playable directly by FFmpeg
+            "postprocessors": [],
+            # Prefer smaller audio streams to save Render disk/RAM
+            "prefer_free_formats": True,
+        }
+        if cookie_file_path and os.path.exists(cookie_file_path):
+            opts["cookiefile"] = cookie_file_path
+        if extra:
+            opts.update(extra)
+        return opts
+
+    tiers = [
+        ("DL-Tier1", _dl_opts()),
+        ("DL-Tier2-Android", _dl_opts({"extractor_args": {"youtube": {"player_client": ["android"]}}})),
+        ("DL-Tier3-iOS", _dl_opts({"extractor_args": {"youtube": {"player_client": ["ios", "tv"]}}})),
+    ]
+
+    for tier_name, opts in tiers:
+        try:
+            logger.info(f"[Download/{tier_name}] Downloading: {title} → {out_template}")
+            with yt_dlp.YoutubeDL(opts) as ydl:
+                ydl.download([target])
+
+            # Find the downloaded file (extension varies by stream)
+            for ext in ["webm", "m4a", "opus", "mp4", "ogg", "mp3"]:
+                candidate = os.path.join(TMP_AUDIO_DIR, f"{video_id}.{ext}")
+                if os.path.exists(candidate) and os.path.getsize(candidate) > 10_000:
+                    size_mb = os.path.getsize(candidate) / 1_048_576
+                    logger.info(f"[Download/{tier_name}] ✅ Downloaded {size_mb:.1f}MB: {candidate}")
+                    return candidate
+
+            logger.warning(f"[Download/{tier_name}] No output file found after download")
+        except Exception as e:
+            logger.warning(f"[Download/{tier_name}] Failed: {e}")
+
+    logger.error(f"[Download] ❌ All download tiers failed for: {title}")
+    return None
+
+
+async def prefetch_audio_download(track_info: dict) -> Optional[str]:
+    """
+    Public async wrapper for background pre-downloading the next track's audio.
+    Called by queue_manager while current song plays to ensure zero-wait transitions.
+
+    - If the file is already cached on disk (loop mode or rapid re-queue), returns instantly.
+    - Runs the download in a thread executor so it doesn't block the event loop.
+    - Safe to call multiple times; duplicate calls are deduplicated by the cache check in
+      _download_audio_to_file().
+    """
+    video_id = track_info.get("id") or ""
+    title = track_info.get("title", "Unknown")
+
+    if not video_id:
+        logger.debug(f"[Prefetch] No video ID for '{title}', skipping pre-download")
+        return None
+
+    # Quick cache check without hitting the executor (avoids thread overhead for hits)
+    for ext in ["webm", "m4a", "opus", "mp4", "ogg"]:
+        cached = os.path.join(TMP_AUDIO_DIR, f"{video_id}.{ext}")
+        if os.path.exists(cached) and os.path.getsize(cached) > 10_000:
+            logger.info(f"[Prefetch] Already on disk (cache hit): {title}")
+            return cached
+
+    logger.info(f"[Prefetch] Pre-downloading in background: {title}")
+    loop = asyncio.get_running_loop()
+    try:
+        result = await loop.run_in_executor(None, _download_audio_to_file, track_info)
+        if result:
+            logger.info(f"[Prefetch] ✅ Pre-download complete: {title}")
+        else:
+            logger.warning(f"[Prefetch] Pre-download returned no file for: {title}")
+        return result
+    except Exception as e:
+        logger.warning(f"[Prefetch] Pre-download note for '{title}': {e}")
+        return None

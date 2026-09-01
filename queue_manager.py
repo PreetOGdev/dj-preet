@@ -1,9 +1,12 @@
 import asyncio
+import logging
 import random
 import time
 from typing import List, Optional, Dict, Any, Callable
-from audio_source import YTDLSource, format_duration, get_recommended_track
+from audio_source import YTDLSource, format_duration, get_recommended_track, prefetch_audio_download
 import db
+
+logger = logging.getLogger("DJ-Preet.Queue")
 
 
 class Track:
@@ -58,6 +61,9 @@ class GuildMusicPlayer:
         self.pause_start_time: float = 0
         self.total_paused_duration: float = 0
         self.seek_offset: float = 0
+
+        # Path of the previous track's temp audio file — deleted when next song starts
+        self._prev_track_file_path: Optional[str] = None
 
         self.tracks_played_count: int = 0
         self.start_timestamp: float = time.time()
@@ -443,16 +449,32 @@ class GuildMusicPlayer:
                     self._manual_stop = False
                     return
                 if error:
-                    print(f"[Player Error] Audio playback finished with error: {error}")
+                    logger.warning(f"[Player] Audio playback finished with error: {error}")
                 fut = asyncio.run_coroutine_threadsafe(self._handle_track_ended(), self.bot.loop)
                 try:
                     fut.result(timeout=5)
                 except Exception as ex:
-                    print(f"[Player Error] after_playback exception: {ex}")
+                    logger.warning(f"[Player] after_playback exception: {ex}")
 
             if self.voice_client and (self.voice_client.is_playing() or self.voice_client.is_paused()):
                 self._manual_stop = True
                 self.voice_client.stop()
+
+            # ── Delete previous song's temp file now that the new one is ready ──
+            # This is the cleanest time to delete it: new audio is confirmed downloaded
+            # and previous FFmpeg process has already been stopped above.
+            if self._prev_track_file_path:
+                import os
+                try:
+                    if os.path.exists(self._prev_track_file_path):
+                        os.remove(self._prev_track_file_path)
+                        logger.debug(f"[TmpClean] Deleted previous track file: {self._prev_track_file_path}")
+                except Exception as e:
+                    logger.debug(f"[TmpClean] Could not delete previous track file: {e}")
+                self._prev_track_file_path = None
+
+            # Remember the current track's temp file path for cleanup when next song starts
+            self._prev_track_file_path = getattr(source, "_temp_file_path", None)
 
             self.current_track = track
             self.is_paused = False
@@ -468,19 +490,47 @@ class GuildMusicPlayer:
             self._save_settings_to_db()
             self.notify_state_changed()
 
-            # Seamless Autoplay: Pre-fetch next track in background while current plays
+            # ── Background pipeline: discover + pre-download next track ──────────
+            # Step 1: If autoplay and queue is empty, find the next track metadata
             if self.autoplay_enabled and len(self.queue) == 0:
                 asyncio.create_task(self._prefetch_next_autoplay_track())
+            # Step 2: Pre-download whatever is next in queue (queue or just-prefetched autoplay)
+            # Small delay to let autoplay prefetch finish adding to queue first
+            asyncio.create_task(self._predownload_next_track(delay_seconds=3.0))
 
         except Exception as e:
-            print(f"[Player Error] Failed to play track '{track.title}': {e}")
+            logger.error(f"[Player] Failed to play track '{track.title}': {e}")
             self.is_loading = False
             self.notify_state_changed()
             if self.queue or self.autoplay_enabled:
                 await self.play_next()
 
+    async def _predownload_next_track(self, delay_seconds: float = 3.0):
+        """
+        Downloads the next track's audio file to disk while current song plays.
+        This guarantees instant playback with zero download wait on transition.
+
+        Pipeline:
+          Song A plays → _predownload_next_track() runs in background
+            → Song B downloaded to /tmp/B.webm
+          Song A ends → play_next() → _download_audio_to_file() hits cache for B
+            → Song B plays instantly → _predownload_next_track() starts Song C download ...
+        """
+        await asyncio.sleep(delay_seconds)  # Short delay so autoplay prefetch can add to queue
+
+        if not self.queue:
+            return  # Nothing queued to pre-download
+
+        next_track = self.queue[0]  # Peek (don't pop)
+        logger.info(f"[Predownload] Starting background download: {next_track.title}")
+        try:
+            await prefetch_audio_download(next_track.to_dict())
+            logger.info(f"[Predownload] ✅ Ready on disk: {next_track.title}")
+        except Exception as e:
+            logger.warning(f"[Predownload] Note for '{next_track.title}': {e}")
+
     async def _prefetch_next_autoplay_track(self):
-        """Pre-fetches the next autoplay song in background while current track plays, guaranteeing 0s transition lag."""
+        """Discovers next autoplay song metadata and adds it to queue, then triggers audio pre-download."""
         if not self.autoplay_enabled or len(self.queue) > 0 or not self.current_track:
             return
         try:
@@ -497,9 +547,11 @@ class GuildMusicPlayer:
                 self.queue.append(prefetched_track)
                 self._save_queue_to_db()
                 self.notify_state_changed()
-                print(f"[Autoplay] Pre-fetched next track in background: {prefetched_track.title}")
+                logger.info(f"[Autoplay] Pre-fetched next track: {prefetched_track.title}")
+                # Immediately start downloading the audio for this autoplay track
+                asyncio.create_task(self._predownload_next_track(delay_seconds=0))
         except Exception as e:
-            print(f"[Autoplay] Pre-fetch note: {e}")
+            logger.warning(f"[Autoplay] Pre-fetch note: {e}")
 
     async def _handle_track_ended(self):
         await self.play_next()
