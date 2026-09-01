@@ -10,14 +10,12 @@ from queue_manager import MusicPlayerManager, GuildMusicPlayer
 
 load_dotenv()
 
-BOT_PREFIX = os.getenv("BOT_PREFIX", "!")
-
 intents = discord.Intents.default()
 intents.message_content = True
 intents.voice_states = True
 intents.guilds = True
 
-bot = commands.Bot(command_prefix=BOT_PREFIX, intents=intents, help_command=None)
+bot = commands.Bot(command_prefix="!", intents=intents, help_command=None)
 player_manager = MusicPlayerManager(bot)
 
 
@@ -252,104 +250,3 @@ async def slash_stop(interaction: discord.Interaction):
         player.voice_client = None
     await interaction.response.send_message("⏹️ Playback stopped and disconnected.")
 
-
-# ---------------------------
-# Prefix Commands (!play, !skip, etc.)
-# ---------------------------
-
-@bot.command(name="play", aliases=["p"])
-async def cmd_play(ctx, *, query: str):
-    try:
-        player = await ensure_voice(ctx)
-        msg = await ctx.send(f"🔍 Searching YouTube for `{query}`...")
-        track_info = await extract_audio_info(query, requester=ctx.author.display_name)
-        if not track_info:
-            await msg.edit(content=f"❌ Could not find track for: `{query}`")
-            return
-
-        track = player.add_track(track_info)
-        await msg.edit(content=f"🎶 Added to queue: **{track.title}** `[{track.formatted_duration}]`")
-
-        if not player.voice_client.is_playing() and not player.is_paused:
-            await player.play_next()
-    except Exception as e:
-        await ctx.send(f"⚠️ Error: {str(e)}")
-
-
-@bot.command(name="skip", aliases=["s", "next"])
-async def cmd_skip(ctx):
-    guild = ctx.guild
-    if guild and guild.id in player_manager.players:
-        player = player_manager.get_player(guild.id)
-        if await player.skip():
-            await ctx.send("⏭️ Skipped.")
-        else:
-            await ctx.send("❌ No track to skip to.")
-
-
-@bot.command(name="pause")
-async def cmd_pause(ctx):
-    guild = ctx.guild
-    if guild and guild.id in player_manager.players:
-        player = player_manager.get_player(guild.id)
-        player.pause()
-        await ctx.send("⏸️ Paused.")
-
-
-@bot.command(name="resume")
-async def cmd_resume(ctx):
-    guild = ctx.guild
-    if guild and guild.id in player_manager.players:
-        player = player_manager.get_player(guild.id)
-        player.resume()
-        await ctx.send("▶️ Resumed.")
-
-
-@bot.command(name="queue", aliases=["q"])
-async def cmd_queue(ctx):
-    guild = ctx.guild
-    if not guild or guild.id not in player_manager.players:
-        await ctx.send("📭 The queue is currently empty.")
-        return
-
-    player = player_manager.get_player(guild.id)
-    curr = player.current_track
-    q = player.queue
-
-    embed = discord.Embed(title=f"📜 Queue for {guild.name}", color=0x8b5cf6)
-    if curr:
-        embed.add_field(
-            name="Now Playing",
-            value=f"🎵 **[{curr.title}]({curr.webpage_url})** ({curr.formatted_duration}) - *{curr.requester}*",
-            inline=False
-        )
-
-    if not q:
-        embed.add_field(name="Upcoming Tracks", value="*No upcoming tracks in queue.*", inline=False)
-    else:
-        lines = [f"`{i}.` **[{t.title}]({t.webpage_url})** `[{t.formatted_duration}]`" for i, t in enumerate(q[:10], start=1)]
-        if len(q) > 10:
-            lines.append(f"*...and {len(q) - 10} more tracks*")
-        embed.add_field(name=f"Up Next ({len(q)} tracks)", value="\n".join(lines), inline=False)
-
-    port = os.getenv("PORT", "8000")
-    embed.set_footer(text=f"Web Player: http://localhost:{port}")
-    await ctx.send(embed=embed)
-
-
-@bot.command(name="panel", aliases=["dashboard", "web"])
-async def cmd_panel(ctx):
-    port = os.getenv("PORT", "8000")
-    await ctx.send(f"🎛️ **DJ-Preet Web Dashboard:** http://localhost:{port}")
-
-
-@bot.command(name="stop", aliases=["leave", "dc"])
-async def cmd_stop(ctx):
-    guild = ctx.guild
-    if guild and guild.id in player_manager.players:
-        player = player_manager.get_player(guild.id)
-        player.stop()
-        if player.voice_client and player.voice_client.is_connected():
-            await player.voice_client.disconnect()
-            player.voice_client = None
-        await ctx.send("⏹️ Disconnected and stopped.")

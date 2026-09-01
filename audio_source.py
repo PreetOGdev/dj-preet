@@ -8,18 +8,12 @@ failures are always visible in Render logs.
 
 import os
 import asyncio
-import collections
-import io
-import json
 import logging
 import random
 import re
 import tempfile
-import threading
 import time
 import traceback
-import urllib.parse
-import urllib.request
 from typing import Optional, List, Dict, Any, Set
 import discord
 import imageio_ffmpeg
@@ -50,21 +44,6 @@ try:
     os.makedirs(TMP_AUDIO_DIR, exist_ok=True)
 except OSError:
     TMP_AUDIO_DIR = tempfile.gettempdir()
-logger_tmp = logging.getLogger("DJ-Preet.Audio")
-
-
-def _schedule_temp_cleanup(filepath: str, delay_seconds: float = 5.0):
-    """Delete a temp audio file after a short delay (gives FFmpeg time to fully release it)."""
-    def _delete():
-        time.sleep(delay_seconds)
-        try:
-            if filepath and os.path.exists(filepath):
-                os.remove(filepath)
-                logger.debug(f"[TmpClean] Deleted: {filepath}")
-        except Exception as e:
-            logger.debug(f"[TmpClean] Could not delete {filepath}: {e}")
-    t = threading.Thread(target=_delete, daemon=True)
-    t.start()
 
 # Audio filter presets for Equalizer
 AUDIO_FILTERS = {
@@ -175,25 +154,8 @@ class _YTDLLogger:
 # - Cookies are REQUIRED on all tiers for datacenter IPs
 # - Deno JS runtime is REQUIRED for signature deciphering
 
-def _base_opts() -> dict:
-    """Base options shared across all extraction profiles."""
-    opts = {
-        "format": "ba/b/bestaudio/best",
-        "noplaylist": True,
-        "nocheckcertificate": True,
-        "quiet": True,
-        "no_warnings": True,
-        "logger": _YTDLLogger(),
-        "source_address": "0.0.0.0",
-        "extractor_retries": 3,
-    }
-    if cookie_file_path and os.path.exists(cookie_file_path):
-        opts["cookiefile"] = cookie_file_path
-    return opts
-
-
 def _tier1_opts() -> dict:
-    """Tier 1: Auto EJS multi-stream negotiation with Deno JS challenge solver and session cookies."""
+    """Tier 1: Default client with session cookies."""
     opts = {
         "format": "ba/b/bestaudio/best",
         "noplaylist": True,
@@ -229,20 +191,6 @@ def _tier3_opts() -> dict:
         }
     }
     return opts
-
-
-def _tier4_opts() -> dict:
-    """Tier 4: Pure anonymous fallback (no cookies)."""
-    return {
-        "format": "ba/b/bestaudio/best",
-        "noplaylist": True,
-        "nocheckcertificate": True,
-        "quiet": True,
-        "no_warnings": True,
-        "logger": _YTDLLogger(),
-        "source_address": "0.0.0.0",
-        "extractor_retries": 2,
-    }
 
 
 def _search_opts() -> dict:
@@ -480,12 +428,10 @@ async def extract_audio_info(query_or_url: str, requester: str = "Web User"):
         return None
 
     def _extract():
-        # Try each tier in order until one succeeds
         tiers = [
-            ("Tier1-AutoEJS", _tier1_opts()),
+            ("Tier1-Default", _tier1_opts()),
             ("Tier2-Android", _tier2_opts()),
             ("Tier3-iOS-TV", _tier3_opts()),
-            ("Tier4-Auth", _tier4_opts()),
         ]
 
         for tier_name, opts in tiers:
@@ -576,63 +522,6 @@ async def get_recommended_track(seed_track: dict, exclude_ids: Set[str] = None) 
     return None
 
 
-# ─── Buffered Audio Source ────────────────────────────────────────
-
-class BufferedAudioSource(discord.AudioSource):
-    """
-    Pre-buffered AudioSource with a dedicated reader thread holding
-    3-5 seconds of PCM audio ahead of time in a ring buffer.
-    Eliminates voice drops from YouTube CDN rate-limiting.
-    """
-
-    def __init__(self, raw_source: discord.FFmpegPCMAudio, buffer_seconds: float = 4.0):
-        self.raw_source = raw_source
-        self.frame_size = 3840  # 20ms of 48kHz 16-bit stereo PCM
-        max_chunks = int(buffer_seconds * 50)  # 50 frames per second
-        self.buffer = collections.deque(maxlen=max_chunks)
-        self._lock = threading.Lock()
-        self._stopped = threading.Event()
-        self._eof = False
-        self._thread = threading.Thread(target=self._buffer_worker, daemon=True)
-        self._thread.start()
-
-    def _buffer_worker(self):
-        while not self._stopped.is_set():
-            if len(self.buffer) >= self.buffer.maxlen:
-                time.sleep(0.015)
-                continue
-            try:
-                data = self.raw_source.read()
-                if not data:
-                    self._eof = True
-                    break
-                with self._lock:
-                    self.buffer.append(data)
-            except Exception:
-                self._eof = True
-                break
-
-    def read(self) -> bytes:
-        with self._lock:
-            if self.buffer:
-                return self.buffer.popleft()
-        if self._eof:
-            return b""
-        # Direct read fallback during buffer warmup
-        try:
-            data = self.raw_source.read()
-            if data:
-                return data
-        except Exception:
-            pass
-        return b""
-
-    def cleanup(self):
-        self._stopped.set()
-        if hasattr(self.raw_source, "cleanup"):
-            self.raw_source.cleanup()
-
-
 # ─── Discord Audio Source ─────────────────────────────────────────
 
 class YTDLSource(discord.PCMVolumeTransformer):
@@ -678,7 +567,7 @@ class YTDLSource(discord.PCMVolumeTransformer):
         temp_path = await loop.run_in_executor(None, _download_audio_to_file, track_info)
 
         if not temp_path:
-            # Fallback: stream from URL (legacy path, less stable)
+            # Fallback: stream directly from URL if download failed
             logger.warning(f"[Source] Download failed — falling back to stream URL for: {title}")
             stream_url = track_info.get("stream_url")
             if not stream_url:
@@ -693,14 +582,15 @@ class YTDLSource(discord.PCMVolumeTransformer):
             if seek_seconds and seek_seconds > 0:
                 before_opts = f"-ss {int(seek_seconds)} {before_opts}"
             filter_opts = AUDIO_FILTERS.get(filter_name, FFMPEG_OPTIONS)
-            raw_ffmpeg = discord.FFmpegPCMAudio(
-                stream_url,
-                executable=FFMPEG_EXECUTABLE,
-                before_options=before_opts,
-                options=filter_opts,
+            return cls(
+                discord.FFmpegPCMAudio(
+                    stream_url,
+                    executable=FFMPEG_EXECUTABLE,
+                    before_options=before_opts,
+                    options=filter_opts,
+                ),
+                data=track_info, volume=volume, temp_file_path=None
             )
-            buffered = BufferedAudioSource(raw_ffmpeg, buffer_seconds=4.0)
-            return cls(buffered, data=track_info, volume=volume, temp_file_path=None)
 
         # ── Step 2: Play from local temp file ─────────────────────────────
         logger.info(f"[Source] ✅ Playing from disk: {temp_path}")
