@@ -165,6 +165,9 @@ def _tier1_opts() -> dict:
         "logger": _YTDLLogger(),
         "source_address": "0.0.0.0",
         "extractor_retries": 2,
+        # Prevent CPU and network starvation on Render 0.1 vCPU Free Tier
+        "ratelimit": 300 * 1024,  # Limit background download to 300 KB/s (still 18x realtime)
+        "sleep_interval_requests": 1,  # Brief pause between HTTP requests
     }
     if cookie_file_path and os.path.exists(cookie_file_path):
         opts["cookiefile"] = cookie_file_path
