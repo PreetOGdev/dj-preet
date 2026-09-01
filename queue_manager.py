@@ -460,10 +460,13 @@ class GuildMusicPlayer:
                 self._manual_stop = True
                 self.voice_client.stop()
 
-            # ── Delete previous song's temp file now that the new one is ready ──
-            # This is the cleanest time to delete it: new audio is confirmed downloaded
-            # and previous FFmpeg process has already been stopped above.
-            if self._prev_track_file_path:
+            # ── Delete previous song's temp file, but ONLY if it's a different file ──
+            # Get the new source's file path FIRST before any deletion.
+            new_file_path = getattr(source, "_temp_file_path", None)
+
+            # Only delete if it's a different file — same path = loop mode (same song),
+            # deleting it would yank the file out from under the new FFmpeg process.
+            if self._prev_track_file_path and self._prev_track_file_path != new_file_path:
                 import os
                 try:
                     if os.path.exists(self._prev_track_file_path):
@@ -471,10 +474,9 @@ class GuildMusicPlayer:
                         logger.debug(f"[TmpClean] Deleted previous track file: {self._prev_track_file_path}")
                 except Exception as e:
                     logger.debug(f"[TmpClean] Could not delete previous track file: {e}")
-                self._prev_track_file_path = None
 
-            # Remember the current track's temp file path for cleanup when next song starts
-            self._prev_track_file_path = getattr(source, "_temp_file_path", None)
+            # Track this song's file for deletion when the next song starts
+            self._prev_track_file_path = new_file_path
 
             self.current_track = track
             self.is_paused = False
