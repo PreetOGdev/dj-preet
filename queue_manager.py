@@ -66,6 +66,8 @@ class GuildMusicPlayer:
         self._prev_track_file_path: Optional[str] = None
         # Guard to prevent duplicate concurrent autoplay prefetch tasks
         self._autoplay_prefetch_running: bool = False
+        # Guard to prevent duplicate concurrent predownload tasks
+        self._predownload_running: bool = False
 
         self.tracks_played_count: int = 0
         self.start_timestamp: float = time.time()
@@ -182,10 +184,18 @@ class GuildMusicPlayer:
 
     def add_track(self, track_info: dict, play_next: bool = False) -> Track:
         track = Track(track_info)
+        was_empty = (len(self.queue) == 0)
+        
         if play_next:
             self.queue.insert(0, track)
         else:
             self.queue.append(track)
+            
+        # If this track is the very next one to play and something is currently playing,
+        # trigger a background download instantly so it's ready for zero-lag transition.
+        if self.current_track and (play_next or was_empty):
+            asyncio.create_task(self._predownload_next_track())
+            
         self._save_queue_to_db()
         self.notify_state_changed()
         return track
@@ -246,8 +256,11 @@ class GuildMusicPlayer:
             self.loop_mode = "off"
         self._save_settings_to_db()
         self.notify_state_changed()
+        
+        # If toggled on mid-song with an empty queue, start the prefetch + predownload pipeline
         if self.autoplay_enabled and len(self.queue) == 0 and self.current_track:
             asyncio.create_task(self._prefetch_next_autoplay_track())
+            asyncio.create_task(self._predownload_next_track())
 
     def set_volume(self, volume_percent: int):
         self.volume = max(0.0, min(2.0, volume_percent / 100.0))
@@ -529,34 +542,35 @@ class GuildMusicPlayer:
         Downloads the next track's audio file to disk while the current song plays.
         Polls the queue for up to 60s so it catches autoplay tracks even if the
         radio-mix fetch takes a while (typically 10-15s on Render).
-
-        Pipeline:
-          Song A plays → _predownload_next_track() runs in background
-            → waits for queue to have a track (polls every 2s, up to 60s)
-            → Song B downloaded to /tmp/B.webm
-          Song A ends → cache hit → Song B plays instantly
         """
+        if self._predownload_running:
+            return
+        
         if delay_seconds > 0:
             await asyncio.sleep(delay_seconds)
 
-        # Poll until something is in the queue or timeout
-        waited = 0
-        poll_interval = 2.0
-        max_wait = 60.0
-        while not self.queue:
-            if waited >= max_wait:
-                logger.debug("[Predownload] No track appeared in queue within 60s, giving up")
-                return
-            await asyncio.sleep(poll_interval)
-            waited += poll_interval
-
-        next_track = self.queue[0]  # Peek (don't pop)
-        logger.info(f"[Predownload] Starting background download: {next_track.title}")
+        self._predownload_running = True
         try:
+            # Poll until something is in the queue or timeout
+            waited = 0
+            poll_interval = 2.0
+            max_wait = 60.0
+            while not self.queue:
+                if waited >= max_wait:
+                    logger.debug("[Predownload] No track appeared in queue within 60s, giving up")
+                    return
+                await asyncio.sleep(poll_interval)
+                waited += poll_interval
+
+            next_track = self.queue[0]  # Peek (don't pop)
+            title = next_track.title
+            logger.info(f"[Predownload] Starting background download: {title}")
             await prefetch_audio_download(next_track.to_dict())
-            logger.info(f"[Predownload] ✅ Ready on disk: {next_track.title}")
+            logger.info(f"[Predownload] ✅ Ready on disk: {title}")
         except Exception as e:
-            logger.warning(f"[Predownload] Note for '{next_track.title}': {e}")
+            logger.warning(f"[Predownload] Note: {e}")
+        finally:
+            self._predownload_running = False
 
     async def _prefetch_next_autoplay_track(self):
         """Discovers next autoplay song metadata and adds it to queue, then triggers audio pre-download."""
